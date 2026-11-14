@@ -41,7 +41,9 @@ test("encrypted asset snapshots are server-scoped, durable, idempotent, and retr
 
     const headers = { authorization: "Bearer " + token };
     const url = "/integrations/servers/" + serverId + "/snapshots";
-    const stored = await app.inject({ method: "POST", url, headers, payload });
+    const uppercaseUrl = "/integrations/servers/" + serverId.toUpperCase() + "/snapshots";
+    const uppercasePayload = { ...payload, snapshotId: snapshotId.toUpperCase(), clusterId: clusterId.toUpperCase() };
+    const stored = await app.inject({ method: "POST", url: uppercaseUrl, headers, payload: uppercasePayload });
     assert.equal(stored.statusCode, 201, stored.body);
     assert.equal(stored.json().data.durable, true);
     assert.equal(stored.json().data.snapshotId, snapshotId);
@@ -50,9 +52,27 @@ test("encrypted asset snapshots are server-scoped, durable, idempotent, and retr
     assert.equal(duplicate.statusCode, 200, duplicate.body);
     assert.equal(duplicate.json().data.duplicate, true);
 
+    const uppercaseReplay = await app.inject({ method: "POST", url: uppercaseUrl, headers, payload: uppercasePayload });
+    assert.equal(uppercaseReplay.statusCode, 200, uppercaseReplay.body);
+    assert.equal(uppercaseReplay.json().data.duplicate, true);
+
+    for (const field of ["gridId", "assetId", "ownerId", "keyId"]) {
+      const invalid = field === "keyId"
+        ? { ...payload, encryption: { ...payload.encryption, keyId: "   " } }
+        : { ...payload, [field]: "   " };
+      const response = await app.inject({ method: "POST", url, headers, payload: invalid });
+      assert.equal(response.statusCode, 400, field + ": " + response.body);
+      assert.equal(response.json().error.code, "VALIDATION_ERROR");
+    }
+    const oversized = await app.inject({ method: "POST", url, headers, payload: {
+      ...payload, stateBytes: 1_048_576,
+      encryption: { ...payload.encryption, ciphertext: Buffer.alloc(1_048_577).toString("base64") }
+    } });
+    assert.equal(oversized.statusCode, 400, oversized.body);
+
     const list = await app.inject({
       method: "GET",
-      url: url + "?kind=ship&assetId=ship-42&before=" + encodeURIComponent(new Date().toISOString()),
+      url: uppercaseUrl + "?kind=ship&assetId=ship-42&before=" + encodeURIComponent(new Date().toISOString()),
       headers
     });
     assert.equal(list.statusCode, 200, list.body);
@@ -75,7 +95,7 @@ test("encrypted asset snapshots are server-scoped, durable, idempotent, and retr
     assert.equal(changedContent.statusCode, 409, changedContent.body);
     assert.equal(changedContent.json().error.code, "SNAPSHOT_ID_CONFLICT");
 
-    const fetched = await app.inject({ method: "GET", url: url + "/" + snapshotId, headers });
+    const fetched = await app.inject({ method: "GET", url: uppercaseUrl + "/" + snapshotId.toUpperCase(), headers });
     assert.equal(fetched.statusCode, 200, fetched.body);
     assert.equal(fetched.json().data.ciphertext, ciphertext);
     assert.equal(fetched.json().data.nonce, nonce);

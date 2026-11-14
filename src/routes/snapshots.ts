@@ -10,20 +10,24 @@ const base64Schema = z.string().min(1).max(MAX_CIPHERTEXT_BYTES).refine((value) 
   return Buffer.from(value, "base64").toString("base64") === value;
 }, "must be canonical base64");
 
+const uuidSchema = z.string().uuid().toLowerCase();
+const identifierSchema = z.string().min(1).max(200).refine((value) => /[^ ]/.test(value),
+  "must not contain only spaces");
+
 const snapshotSchema = z.object({
-  snapshotId: z.string().uuid(),
-  clusterId: z.string().uuid(),
-  gridId: z.string().min(1).max(200),
+  snapshotId: uuidSchema,
+  clusterId: uuidSchema,
+  gridId: identifierSchema,
   kind: z.enum(["inventory", "tame", "ship"]),
-  assetId: z.string().min(1).max(200),
-  ownerId: z.string().min(1).max(200),
+  assetId: identifierSchema,
+  ownerId: identifierSchema,
   capturedAt: z.string().datetime({ offset: true }),
   reason: z.enum(["scheduled", "pre-loss", "manual", "reconciliation"]),
   schemaVersion: z.literal(1),
   stateBytes: z.number().int().min(1).max(MAX_STATE_BYTES),
   encryption: z.object({
     algorithm: z.literal("AES-256-GCM"),
-    keyId: z.string().min(1).max(200),
+    keyId: identifierSchema,
     nonce: z.string().regex(/^[A-Za-z0-9+/]{16}$/),
     authTag: z.string().regex(/^[A-Za-z0-9+/]{22}==$/),
     ciphertext: base64Schema
@@ -33,7 +37,7 @@ const snapshotSchema = z.object({
 
 const listSchema = z.object({
   kind: z.enum(["inventory", "tame", "ship"]),
-  assetId: z.string().min(1).max(200),
+  assetId: identifierSchema,
   before: z.string().optional(),
   limit: z.coerce.number().int().min(1).max(100).default(25)
 }).strict().refine((value) => value.before === undefined || Number.isFinite(Date.parse(value.before)));
@@ -41,7 +45,7 @@ const listSchema = z.object({
 export async function registerSnapshotRoutes(app: FastifyInstance): Promise<void> {
   app.post("/integrations/servers/:serverId/snapshots", { bodyLimit: 2 * 1024 * 1024 }, async (request, reply) => {
     if (!pool) return reply.code(503).send({ error: { code: "DATABASE_UNAVAILABLE", message: "Snapshot storage is temporarily unavailable." } });
-    const params = z.object({ serverId: z.string().uuid() }).safeParse(request.params);
+    const params = z.object({ serverId: uuidSchema }).safeParse(request.params);
     const body = snapshotSchema.safeParse(request.body);
     if (!params.success || !body.success) return reply.code(400).send({ error: { code: "VALIDATION_ERROR", message: "A valid server ID and encrypted snapshot envelope are required." } });
 
@@ -121,7 +125,7 @@ export async function registerSnapshotRoutes(app: FastifyInstance): Promise<void
 
   app.get("/integrations/servers/:serverId/snapshots", async (request, reply) => {
     if (!pool) return reply.code(503).send({ error: { code: "DATABASE_UNAVAILABLE", message: "Snapshot storage is temporarily unavailable." } });
-    const params = z.object({ serverId: z.string().uuid() }).safeParse(request.params);
+    const params = z.object({ serverId: uuidSchema }).safeParse(request.params);
     const query = listSchema.safeParse(request.query);
     if (!params.success || !query.success) return reply.code(400).send({ error: { code: "VALIDATION_ERROR", message: "A valid server ID and snapshot lookup are required." } });
     const actorId = await requireServicePermission(request, reply, "snapshots.read", "server", params.data.serverId);
@@ -140,7 +144,7 @@ export async function registerSnapshotRoutes(app: FastifyInstance): Promise<void
 
   app.get("/integrations/servers/:serverId/snapshots/:snapshotId", async (request, reply) => {
     if (!pool) return reply.code(503).send({ error: { code: "DATABASE_UNAVAILABLE", message: "Snapshot storage is temporarily unavailable." } });
-    const params = z.object({ serverId: z.string().uuid(), snapshotId: z.string().uuid() }).safeParse(request.params);
+    const params = z.object({ serverId: uuidSchema, snapshotId: uuidSchema }).safeParse(request.params);
     if (!params.success) return reply.code(400).send({ error: { code: "VALIDATION_ERROR", message: "Valid server and snapshot UUIDs are required." } });
     const actorId = await requireServicePermission(request, reply, "snapshots.read", "server", params.data.serverId);
     if (!actorId) return;
