@@ -11,6 +11,7 @@ import { registerIntegrationRoutes } from "./routes/integrations.js";
 import { registerPlayerResolutionRoutes } from "./routes/player-resolution.js";
 import { registerPaymentRoutes } from "./routes/payments.js";
 import { registerPluginRoutes } from "./routes/plugins.js";
+import { registerRecoverySnapshotRoutes } from "./routes/recovery-snapshots.js";
 import { registerRewardRoutes } from "./routes/rewards.js";
 import { registerServerRoutes } from "./routes/servers.js";
 import { registerSteamLinkRoutes } from "./routes/steam-link.js";
@@ -23,7 +24,7 @@ export function buildApp() {
         req(request) {
           return {
             method: request.method,
-            url: request.url.split("?", 1)[0]!,
+            url: request.url.split("?")[0]!,
             ...(typeof request.headers["accept-version"] === "string"
               ? { version: request.headers["accept-version"] } : {}),
             host: request.host,
@@ -63,6 +64,7 @@ export function buildApp() {
   void registerGameEventRoutes(app);
   void registerEventOutboxRoutes(app);
   void registerPluginRoutes(app);
+  void registerRecoverySnapshotRoutes(app);
   void registerRewardRoutes(app);
   void registerPlayerResolutionRoutes(app);
   void registerSteamLinkRoutes(app);
