@@ -25,7 +25,7 @@ test("encrypted asset snapshots are server-scoped, durable, idempotent, and retr
   const payload = {
     snapshotId, clusterId, gridId: "A1", kind: "ship", assetId: "ship-42",
     ownerId: "provider-owner-7", capturedAt, reason: "pre-loss", schemaVersion: 1,
-    stateBytes: 512,
+    stateBytes: 128,
     encryption: { algorithm: "AES-256-GCM", keyId: "test-key-v1", nonce, authTag, ciphertext }
   };
 
@@ -60,6 +60,21 @@ test("encrypted asset snapshots are server-scoped, durable, idempotent, and retr
     assert.equal(list.json().data[0].snapshotId, snapshotId);
     assert.equal(Object.hasOwn(list.json().data[0], "ciphertext"), false);
 
+    const audit = await pool.query("SELECT metadata FROM operations.audit_logs WHERE actor_principal_id = $1 AND action = 'asset_snapshot.read'", [principalId]);
+    assert.equal(audit.rows.length, 1);
+    assert.deepEqual(audit.rows[0].metadata, { serverId, kind: "ship", assetId: "ship-42", resultCount: 1 });
+
+    const falseSize = await app.inject({ method: "POST", url, headers, payload: { ...payload, snapshotId: randomUUID(), stateBytes: 512 } });
+    assert.equal(falseSize.statusCode, 400, falseSize.body);
+
+    const nonceReuse = await app.inject({ method: "POST", url, headers, payload: { ...payload, snapshotId: randomUUID() } });
+    assert.equal(nonceReuse.statusCode, 409, nonceReuse.body);
+    assert.equal(nonceReuse.json().error.code, "SNAPSHOT_NONCE_CONFLICT");
+
+    const changedContent = await app.inject({ method: "POST", url, headers, payload: { ...payload, ownerId: "changed" } });
+    assert.equal(changedContent.statusCode, 409, changedContent.body);
+    assert.equal(changedContent.json().error.code, "SNAPSHOT_ID_CONFLICT");
+
     const fetched = await app.inject({ method: "GET", url: url + "/" + snapshotId, headers });
     assert.equal(fetched.statusCode, 200, fetched.body);
     assert.equal(fetched.json().data.ciphertext, ciphertext);
@@ -77,6 +92,15 @@ test("encrypted asset snapshots are server-scoped, durable, idempotent, and retr
       payload: { ...payload, snapshotId: randomUUID(), encryption: { ...payload.encryption, algorithm: "none" } }
     });
     assert.equal(invalidEnvelope.statusCode, 400);
+
+    await pool.query("UPDATE core.servers SET status = 'deleted' WHERE id = $1", [serverId]);
+    const deletedList = await app.inject({ method: "GET", url: url + "?kind=ship&assetId=ship-42", headers });
+    assert.equal(deletedList.statusCode, 200, deletedList.body);
+    assert.deepEqual(deletedList.json().data, []);
+    const deletedDetail = await app.inject({ method: "GET", url: url + "/" + snapshotId, headers });
+    assert.equal(deletedDetail.statusCode, 404, deletedDetail.body);
+    const deletedWrite = await app.inject({ method: "POST", url, headers, payload });
+    assert.equal(deletedWrite.statusCode, 404, deletedWrite.body);
   } finally {
     await pool.query("DELETE FROM operations.asset_snapshots WHERE server_id = ANY($1::uuid[])", [[serverId, otherServerId]]);
     await pool.query("DELETE FROM operations.audit_logs WHERE actor_principal_id = $1", [principalId]);

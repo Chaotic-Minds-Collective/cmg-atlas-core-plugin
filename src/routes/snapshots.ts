@@ -28,7 +28,8 @@ const snapshotSchema = z.object({
     authTag: z.string().regex(/^[A-Za-z0-9+/]{22}==$/),
     ciphertext: base64Schema
   }).strict()
-}).strict().refine((value) => Buffer.from(value.encryption.ciphertext, "base64").byteLength <= MAX_CIPHERTEXT_BYTES);
+}).strict().refine((value) => Buffer.from(value.encryption.ciphertext, "base64").byteLength === value.stateBytes,
+  "stateBytes must match the encrypted state size");
 
 const listSchema = z.object({
   kind: z.enum(["inventory", "tame", "ship"]),
@@ -64,7 +65,7 @@ export async function registerSnapshotRoutes(app: FastifyInstance): Promise<void
       const encrypted = body.data.encryption;
       const ciphertext = Buffer.from(encrypted.ciphertext, "base64");
       const inserted = await client.query(
-        "INSERT INTO operations.asset_snapshots (snapshot_id, server_id, cluster_id, grid_id, kind, asset_id, owner_id, captured_at, reason, schema_version, encryption_algorithm, encryption_key_id, nonce, auth_tag, ciphertext, ciphertext_bytes, state_bytes) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17) ON CONFLICT (snapshot_id) DO NOTHING RETURNING snapshot_id",
+        "INSERT INTO operations.asset_snapshots (snapshot_id, server_id, cluster_id, grid_id, kind, asset_id, owner_id, captured_at, reason, schema_version, encryption_algorithm, encryption_key_id, nonce, auth_tag, ciphertext, ciphertext_bytes, state_bytes) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17) ON CONFLICT DO NOTHING RETURNING snapshot_id",
         [body.data.snapshotId, params.data.serverId, body.data.clusterId, body.data.gridId, body.data.kind, body.data.assetId, body.data.ownerId, body.data.capturedAt, body.data.reason, body.data.schemaVersion, encrypted.algorithm, encrypted.keyId, Buffer.from(encrypted.nonce, "base64"), Buffer.from(encrypted.authTag, "base64"), ciphertext, ciphertext.byteLength, body.data.stateBytes]
       );
 
@@ -74,6 +75,10 @@ export async function registerSnapshotRoutes(app: FastifyInstance): Promise<void
           [body.data.snapshotId]
         );
         const prior = existing.rows[0];
+        if (!prior) {
+          await client.query("ROLLBACK");
+          return reply.code(409).send({ error: { code: "SNAPSHOT_NONCE_CONFLICT", message: "The encryption key ID and nonce are already in use." } });
+        }
         const same = prior &&
           prior.server_id === params.data.serverId &&
           prior.cluster_id === body.data.clusterId &&
@@ -123,8 +128,12 @@ export async function registerSnapshotRoutes(app: FastifyInstance): Promise<void
     if (!actorId) return;
 
     const result = await pool.query(
-      "SELECT snapshot_id AS \"snapshotId\", kind, asset_id AS \"assetId\", owner_id AS \"ownerId\", cluster_id AS \"clusterId\", grid_id AS \"gridId\", captured_at AS \"capturedAt\", reason, schema_version AS \"schemaVersion\", state_bytes AS \"stateBytes\", encryption_algorithm AS \"encryptionAlgorithm\", encryption_key_id AS \"keyId\", created_at AS \"createdAt\" FROM operations.asset_snapshots WHERE server_id = $1 AND kind = $2 AND asset_id = $3 AND ($4::timestamptz IS NULL OR captured_at < $4::timestamptz) ORDER BY captured_at DESC, snapshot_id DESC LIMIT $5",
+      "SELECT snapshot_id AS \"snapshotId\", kind, asset_id AS \"assetId\", owner_id AS \"ownerId\", cluster_id AS \"clusterId\", grid_id AS \"gridId\", captured_at AS \"capturedAt\", reason, schema_version AS \"schemaVersion\", state_bytes AS \"stateBytes\", encryption_algorithm AS \"encryptionAlgorithm\", encryption_key_id AS \"keyId\", created_at AS \"createdAt\" FROM operations.asset_snapshots WHERE server_id = $1 AND EXISTS (SELECT 1 FROM core.servers WHERE id = $1 AND status <> 'deleted') AND kind = $2 AND asset_id = $3 AND ($4::timestamptz IS NULL OR captured_at < $4::timestamptz) ORDER BY captured_at DESC, snapshot_id DESC LIMIT $5",
       [params.data.serverId, query.data.kind, query.data.assetId, query.data.before ?? null, query.data.limit]
+    );
+    await pool.query(
+      "INSERT INTO operations.audit_logs (actor_principal_id, action, resource_type, outcome, metadata) VALUES ($1, 'asset_snapshot.read', 'asset_snapshot', 'success', $2::jsonb)",
+      [actorId, JSON.stringify({ serverId: params.data.serverId, kind: query.data.kind, assetId: query.data.assetId, resultCount: result.rows.length })]
     );
     return { data: result.rows, requestId: request.id };
   });
@@ -137,7 +146,7 @@ export async function registerSnapshotRoutes(app: FastifyInstance): Promise<void
     if (!actorId) return;
 
     const result = await pool.query(
-      "SELECT snapshot_id AS \"snapshotId\", kind, asset_id AS \"assetId\", owner_id AS \"ownerId\", cluster_id AS \"clusterId\", grid_id AS \"gridId\", captured_at AS \"capturedAt\", reason, schema_version AS \"schemaVersion\", state_bytes AS \"stateBytes\", encryption_algorithm AS \"algorithm\", encryption_key_id AS \"keyId\", encode(nonce, 'base64') AS nonce, encode(auth_tag, 'base64') AS \"authTag\", replace(encode(ciphertext, 'base64'), E'\\n', '') AS ciphertext, created_at AS \"createdAt\" FROM operations.asset_snapshots WHERE server_id = $1 AND snapshot_id = $2",
+      "SELECT snapshot_id AS \"snapshotId\", kind, asset_id AS \"assetId\", owner_id AS \"ownerId\", cluster_id AS \"clusterId\", grid_id AS \"gridId\", captured_at AS \"capturedAt\", reason, schema_version AS \"schemaVersion\", state_bytes AS \"stateBytes\", encryption_algorithm AS \"algorithm\", encryption_key_id AS \"keyId\", encode(nonce, 'base64') AS nonce, encode(auth_tag, 'base64') AS \"authTag\", replace(encode(ciphertext, 'base64'), E'\\n', '') AS ciphertext, created_at AS \"createdAt\" FROM operations.asset_snapshots WHERE server_id = $1 AND EXISTS (SELECT 1 FROM core.servers WHERE id = $1 AND status <> 'deleted') AND snapshot_id = $2",
       [params.data.serverId, params.data.snapshotId]
     );
     const snapshot = result.rows[0];
