@@ -10,6 +10,8 @@ The command prints a high-entropy credential once. Store it in the integration's
 
 For a game status reporter such as Glitch Bot, assign the `server_heartbeat` role with `scope_type='server'` and `scope_id=<server UUID>`. This grants only `servers.heartbeat`, not server administration. Game adapters that need administrative capabilities must receive separately reviewed roles.
 
+For encrypted ATLAS recovery snapshots, assign `asset_snapshot_manager` to the exact server scope. It grants only `snapshots.write` and `snapshots.read`; see [Encrypted Asset Snapshot API](asset-snapshots.md).
+
 ## Server heartbeat
 
 `POST /integrations/servers/{serverId}/heartbeat`

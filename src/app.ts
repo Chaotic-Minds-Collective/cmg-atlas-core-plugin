@@ -13,6 +13,7 @@ import { registerPaymentRoutes } from "./routes/payments.js";
 import { registerPluginRoutes } from "./routes/plugins.js";
 import { registerRewardRoutes } from "./routes/rewards.js";
 import { registerServerRoutes } from "./routes/servers.js";
+import { registerSnapshotRoutes } from "./routes/snapshots.js";
 import { registerSteamLinkRoutes } from "./routes/steam-link.js";
 
 export function buildApp() {
@@ -65,6 +66,7 @@ export function buildApp() {
   void registerPluginRoutes(app);
   void registerRewardRoutes(app);
   void registerPlayerResolutionRoutes(app);
+  void registerSnapshotRoutes(app);
   void registerSteamLinkRoutes(app);
   void registerDiscordLinkRoutes(app);
   return app;
