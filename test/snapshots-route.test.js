@@ -70,6 +70,13 @@ test("encrypted asset snapshots are server-scoped, durable, idempotent, and retr
     } });
     assert.equal(oversized.statusCode, 400, oversized.body);
 
+    for (const before of ["0", "not-a-date", "2026-02-30T12:00:00Z", "0000-01-01T00:00:00Z", "2026-01-01T12:00:00+23:00"]) {
+      const invalidBefore = await app.inject({ method: "GET", headers,
+        url: url + "?kind=ship&assetId=ship-42&before=" + encodeURIComponent(before) });
+      assert.equal(invalidBefore.statusCode, 400, before + ": " + invalidBefore.body);
+      assert.equal(invalidBefore.json().error.code, "VALIDATION_ERROR");
+    }
+
     const list = await app.inject({
       method: "GET",
       url: uppercaseUrl + "?kind=ship&assetId=ship-42&before=" + encodeURIComponent(new Date().toISOString()),
@@ -83,6 +90,18 @@ test("encrypted asset snapshots are server-scoped, durable, idempotent, and retr
     const audit = await pool.query("SELECT metadata FROM operations.audit_logs WHERE actor_principal_id = $1 AND action = 'asset_snapshot.read'", [principalId]);
     assert.equal(audit.rows.length, 1);
     assert.deepEqual(audit.rows[0].metadata, { serverId, kind: "ship", assetId: "ship-42", resultCount: 1 });
+
+    for (const before of [capturedAt, capturedAt.replace(/Z$/, "000+00:00")]) {
+      const exclusive = await app.inject({ method: "GET", headers,
+        url: url + "?kind=ship&assetId=ship-42&before=" + encodeURIComponent(before) });
+      assert.equal(exclusive.statusCode, 200, exclusive.body);
+      assert.deepEqual(exclusive.json().data, []);
+    }
+    const preciseBefore = capturedAt.replace(/(\.\d{3})Z$/, "$1001+00:00");
+    const precise = await app.inject({ method: "GET", headers,
+      url: url + "?kind=ship&assetId=ship-42&before=" + encodeURIComponent(preciseBefore) });
+    assert.equal(precise.statusCode, 200, precise.body);
+    assert.equal(precise.json().data.length, 1, "preserve microsecond precision in before");
 
     const falseSize = await app.inject({ method: "POST", url, headers, payload: { ...payload, snapshotId: randomUUID(), stateBytes: 512 } });
     assert.equal(falseSize.statusCode, 400, falseSize.body);

@@ -38,9 +38,13 @@ const snapshotSchema = z.object({
 const listSchema = z.object({
   kind: z.enum(["inventory", "tame", "ship"]),
   assetId: identifierSchema,
-  before: z.string().optional(),
+  before: z.string().datetime({ offset: true }).refine((value) => {
+    // PostgreSQL has no year zero and accepts time-zone offsets below 16 hours.
+    const offset = value.match(/[+-](\d{2}):?\d{2}$/);
+    return !value.startsWith("0000-") && (!offset || Number(offset[1]) < 16);
+  }, "must be a PostgreSQL-compatible ISO-8601 timestamp").optional(),
   limit: z.coerce.number().int().min(1).max(100).default(25)
-}).strict().refine((value) => value.before === undefined || Number.isFinite(Date.parse(value.before)));
+}).strict();
 
 export async function registerSnapshotRoutes(app: FastifyInstance): Promise<void> {
   app.post("/integrations/servers/:serverId/snapshots", { bodyLimit: 2 * 1024 * 1024 }, async (request, reply) => {
