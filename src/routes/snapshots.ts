@@ -4,9 +4,8 @@ import { requireServicePermission } from "../auth/service.js";
 import { pool } from "../db.js";
 
 const MAX_STATE_BYTES = 1_048_576;
-const MAX_CIPHERTEXT_BYTES = 1_048_576;
-const MAX_CIPHERTEXT_BASE64_CHARS = 1_398_104;
-const base64Schema = z.string().min(1).max(MAX_CIPHERTEXT_BASE64_CHARS).refine((value) => {
+const MAX_CIPHERTEXT_BYTES = 1_398_104;
+const base64Schema = z.string().min(1).max(MAX_CIPHERTEXT_BYTES).refine((value) => {
   if (!/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(value)) return false;
   return Buffer.from(value, "base64").toString("base64") === value;
 }, "must be canonical base64");
@@ -138,7 +137,7 @@ export async function registerSnapshotRoutes(app: FastifyInstance): Promise<void
     if (!actorId) return;
 
     const result = await pool.query(
-      "SELECT snapshot_id AS \"snapshotId\", kind, asset_id AS \"assetId\", owner_id AS \"ownerId\", cluster_id AS \"clusterId\", grid_id AS \"gridId\", captured_at AS \"capturedAt\", reason, schema_version AS \"schemaVersion\", state_bytes AS \"stateBytes\", encryption_algorithm AS \"algorithm\", encryption_key_id AS \"keyId\", encode(nonce, 'base64') AS nonce, encode(auth_tag, 'base64') AS \"authTag\", encode(ciphertext, 'base64') AS ciphertext, created_at AS \"createdAt\" FROM operations.asset_snapshots WHERE server_id = $1 AND snapshot_id = $2",
+      "SELECT snapshot_id AS \"snapshotId\", kind, asset_id AS \"assetId\", owner_id AS \"ownerId\", cluster_id AS \"clusterId\", grid_id AS \"gridId\", captured_at AS \"capturedAt\", reason, schema_version AS \"schemaVersion\", state_bytes AS \"stateBytes\", encryption_algorithm AS \"algorithm\", encryption_key_id AS \"keyId\", encode(nonce, 'base64') AS nonce, encode(auth_tag, 'base64') AS \"authTag\", replace(encode(ciphertext, 'base64'), E'\\n', '') AS ciphertext, created_at AS \"createdAt\" FROM operations.asset_snapshots WHERE server_id = $1 AND snapshot_id = $2",
       [params.data.serverId, params.data.snapshotId]
     );
     const snapshot = result.rows[0];
