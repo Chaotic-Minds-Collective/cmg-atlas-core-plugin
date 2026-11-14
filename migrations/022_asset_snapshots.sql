@@ -13,7 +13,7 @@ CREATE TABLE operations.asset_snapshots (
   encryption_key_id TEXT NOT NULL CHECK (length(btrim(encryption_key_id)) BETWEEN 1 AND 200),
   nonce BYTEA NOT NULL CHECK (octet_length(nonce) = 12),
   auth_tag BYTEA NOT NULL CHECK (octet_length(auth_tag) = 16),
-  ciphertext BYTEA NOT NULL CHECK (octet_length(ciphertext) BETWEEN 1 AND 1398104),
+  ciphertext BYTEA NOT NULL CHECK (octet_length(ciphertext) BETWEEN 1 AND 1048576),
   ciphertext_bytes INTEGER NOT NULL CHECK (ciphertext_bytes = octet_length(ciphertext)),
   state_bytes INTEGER NOT NULL CHECK (state_bytes BETWEEN 1 AND 1048576),
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()

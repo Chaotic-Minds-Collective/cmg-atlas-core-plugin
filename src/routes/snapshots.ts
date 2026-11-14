@@ -4,8 +4,9 @@ import { requireServicePermission } from "../auth/service.js";
 import { pool } from "../db.js";
 
 const MAX_STATE_BYTES = 1_048_576;
-const MAX_CIPHERTEXT_BYTES = 1_398_104;
-const base64Schema = z.string().min(1).max(MAX_CIPHERTEXT_BYTES).refine((value) => {
+const MAX_CIPHERTEXT_BYTES = 1_048_576;
+const MAX_CIPHERTEXT_BASE64_CHARS = 1_398_104;
+const base64Schema = z.string().min(1).max(MAX_CIPHERTEXT_BASE64_CHARS).refine((value) => {
   if (!/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(value)) return false;
   return Buffer.from(value, "base64").toString("base64") === value;
 }, "must be canonical base64");
