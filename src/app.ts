@@ -14,6 +14,7 @@ import { registerPluginRoutes } from "./routes/plugins.js";
 import { registerRecoverySnapshotRoutes } from "./routes/recovery-snapshots.js";
 import { registerRewardRoutes } from "./routes/rewards.js";
 import { registerServerRoutes } from "./routes/servers.js";
+import { registerSnapshotRoutes } from "./routes/snapshots.js";
 import { registerSteamLinkRoutes } from "./routes/steam-link.js";
 
 export function buildApp() {
@@ -67,6 +68,7 @@ export function buildApp() {
   void registerRecoverySnapshotRoutes(app);
   void registerRewardRoutes(app);
   void registerPlayerResolutionRoutes(app);
+  void registerSnapshotRoutes(app);
   void registerSteamLinkRoutes(app);
   void registerDiscordLinkRoutes(app);
   return app;
