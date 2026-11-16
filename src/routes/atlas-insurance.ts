@@ -333,6 +333,33 @@ export async function registerAtlasInsuranceRoutes(app: FastifyInstance): Promis
     } catch (error) {
       await client.query("ROLLBACK").catch(() => undefined);
       if (typeof error === "object" && error !== null && "code" in error && error.code === "23505") {
+        const duplicate = await client.query<{
+          id: string;
+          request_hash: string;
+          status: string;
+          snapshot_id: string;
+          loss_event_external_id: string;
+        }>(
+          `SELECT id, request_hash, status, snapshot_id, loss_event_external_id
+             FROM operations.atlas_insurance_claims
+            WHERE principal_id = $1 AND idempotency_key = $2`,
+          [principalId, idempotencyKey]
+        );
+        if (duplicate.rows[0]) {
+          if (duplicate.rows[0].request_hash !== requestHash) {
+            return sendError(reply, 409, "IDEMPOTENCY_CONFLICT", "This idempotency key was already used for a different insurance claim.");
+          }
+          return reply.code(200).send({
+            data: {
+              claimId: duplicate.rows[0].id,
+              status: duplicate.rows[0].status,
+              snapshotId: duplicate.rows[0].snapshot_id,
+              lossEventId: duplicate.rows[0].loss_event_external_id,
+              duplicate: true
+            },
+            requestId: request.id
+          });
+        }
         return sendError(reply, 409, "INSURANCE_CLAIM_CONFLICT", "This loss event has already been submitted as an insurance claim.");
       }
       request.log.error({ err: error }, "ATLAS insurance claim submission failed");
