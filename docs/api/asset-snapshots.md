@@ -47,9 +47,9 @@ A new snapshot returns 201 with durable: true and a persistence receipt. Replayi
 
 ## List snapshots for a lost asset
 
-GET /integrations/servers/{serverId}/snapshots?kind=ship&assetId=provider-ship-id&before=<ISO-8601>&limit=25
+GET /integrations/servers/{serverId}/snapshots?kind=ship&assetId=provider-ship-id&ownerId=provider-owner-id&before=<ISO-8601>&limit=25
 
-kind and assetId are required. before is optional and exclusive; it selects snapshots captured before a loss event. limit defaults to 25 and is bounded from 1 to 100. The list contains metadata only, not ciphertext.
+kind and assetId are required. ownerId is optional and applies an exact owner filter. before is optional and exclusive; it selects snapshots captured before a loss event. limit defaults to 25 and is bounded from 1 to 100. The list contains metadata only, not ciphertext.
 
 ## Retrieve one encrypted snapshot
 
