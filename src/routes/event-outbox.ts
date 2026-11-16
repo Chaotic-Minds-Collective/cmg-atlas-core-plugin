@@ -98,9 +98,10 @@ export async function registerEventOutboxRoutes(app: FastifyInstance): Promise<v
         attempts: number;
         claimed_by_principal_id: string | null;
         lease_token: string | null;
-        lease_expires_at: Date | null;
+        lease_active: boolean | null;
       }>(
-        `SELECT id, processed_at, attempts, claimed_by_principal_id, lease_token, lease_expires_at
+        `SELECT id, processed_at, attempts, claimed_by_principal_id, lease_token,
+                (lease_expires_at > NOW()) AS lease_active
            FROM operations.event_outbox
           WHERE id = $1 AND event_type = 'game.event.received'
             AND payload->>'serverId' = $2
@@ -119,8 +120,7 @@ export async function registerEventOutboxRoutes(app: FastifyInstance): Promise<v
       if (
         event.claimed_by_principal_id !== actorId ||
         event.lease_token !== body.data.leaseToken ||
-        !event.lease_expires_at ||
-        event.lease_expires_at.getTime() <= Date.now()
+        event.lease_active !== true
       ) {
         await client.query("ROLLBACK");
         return reply.code(409).send({ error: { code: "EVENT_LEASE_INVALID", message: "This service does not hold the active lease for this event." } });
