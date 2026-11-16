@@ -259,7 +259,6 @@ export async function registerAtlasInsuranceRoutes(app: FastifyInstance): Promis
             )
             AND (e.expires_at IS NULL OR e.expires_at > NOW())
             AND e.granted_at <= $3
-            AND pt.verified_at <= $3
             AND e.granted_at + (ip.coverage_seconds * INTERVAL '1 second') >= $3
             AND (e.expires_at IS NULL OR e.expires_at >= $3)
           ORDER BY e.granted_at DESC
