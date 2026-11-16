@@ -232,8 +232,13 @@ export async function registerAtlasInsuranceRoutes(app: FastifyInstance): Promis
       const entitlementResult = await client.query<{
         id: string;
         quantity: number;
+        claims_used: number;
       }>(
-        `SELECT e.id, e.quantity
+        `SELECT e.id, e.quantity,
+                (SELECT COUNT(*)::integer
+                   FROM operations.atlas_insurance_claims c
+                  WHERE c.entitlement_id = e.id
+                    AND c.status IN ('submitted', 'approved')) AS claims_used
            FROM commerce.entitlements e
            JOIN commerce.atlas_insurance_products ip ON ip.product_id = e.product_id
            JOIN commerce.order_items oi ON oi.id = e.order_item_id
@@ -253,26 +258,17 @@ export async function registerAtlasInsuranceRoutes(app: FastifyInstance): Promis
             AND e.granted_at + (ip.coverage_seconds * INTERVAL '1 second') >= $3
             AND (e.expires_at IS NULL OR e.expires_at >= $3)
           ORDER BY e.granted_at DESC
-          LIMIT 1
           FOR UPDATE OF e`,
         [principalId, parsed.data.assetKind, event.occurred_at]
       );
-      const entitlement = entitlementResult.rows[0];
+      const eligibleEntitlements = entitlementResult.rows;
+      const entitlement = eligibleEntitlements.find((candidate) => candidate.claims_used < candidate.quantity);
       if (!entitlement) {
         await client.query("ROLLBACK");
-        return sendError(reply, 409, "ACTIVE_INSURANCE_REQUIRED", "No active, verified insurance entitlement covers this asset type and loss time.");
-      }
-
-      const claimCount = await client.query<{ count: number }>(
-        `SELECT COUNT(*)::integer AS count
-           FROM operations.atlas_insurance_claims
-          WHERE entitlement_id = $1
-            AND status IN ('submitted', 'approved')`,
-        [entitlement.id]
-      );
-      if ((claimCount.rows[0]?.count ?? 0) >= entitlement.quantity) {
-        await client.query("ROLLBACK");
-        return sendError(reply, 409, "INSURANCE_CLAIM_LIMIT_REACHED", "All claim uses included in this insurance entitlement have already been submitted or approved.");
+        if (eligibleEntitlements.length) {
+          return sendError(reply, 409, "INSURANCE_CLAIM_LIMIT_REACHED", "All claim uses included in the matching insurance entitlements have already been submitted or approved.");
+        }
+        return sendError(reply, 409, "ACTIVE_INSURANCE_REQUIRED", "No active, payment-verified insurance entitlement covers this asset type and loss time.");
       }
 
       const inserted = await client.query<{ id: string }>(
