@@ -236,6 +236,7 @@ export async function registerAtlasInsuranceRoutes(app: FastifyInstance): Promis
       }>(
         `SELECT e.id, e.quantity
            FROM commerce.entitlements e
+           JOIN commerce.products p ON p.id = e.product_id AND p.product_type = 'game_entitlement'
            JOIN commerce.atlas_insurance_products ip ON ip.product_id = e.product_id
            JOIN commerce.order_items oi ON oi.id = e.order_item_id
            JOIN commerce.orders o ON o.id = oi.order_id AND o.principal_id = e.principal_id
