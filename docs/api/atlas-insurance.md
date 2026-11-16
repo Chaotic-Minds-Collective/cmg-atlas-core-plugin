@@ -34,8 +34,8 @@ Requires a player bearer session and an `Idempotency-Key` header (8–128 charac
 Core requires:
 - A verified, currently active Steam link for the player.
 - A registered ATLAS server, cluster, and grid that match exactly.
-- A server-ingested `tame.died` or `ship.sunk` event matching the asset ID and verified Steam owner.
-- An active insurance entitlement for the matching asset kind, covering the loss timestamp.
+- A server-ingested `tame.died` or `ship.sunk` event matching the asset ID and verified Steam owner. The normalized event payload must include `assetId` and `ownerId`; `ownerId` must be the SteamID64 recorded on the verified account link. The loss timestamp may not be more than five minutes in the future.
+- An active insurance entitlement backed by a paid order and a successful payment transaction with a non-null verification timestamp, covering the loss timestamp.
 - An eligible pre-loss recovery snapshot for the same asset, owner, server, cluster, and grid.
 - An unused claim allowance on that entitlement.
 
