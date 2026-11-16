@@ -66,7 +66,16 @@ test("game event outbox claims are server-scoped and acknowledgements require th
       headers: { authorization: "Bearer " + token },
       payload: { leaseToken: rows[0].leaseToken, outcome: "delivered" }
     });
-    const accepted = await ack();
+    const originalDateNow = Date.now;
+    let accepted;
+    Date.now = () => originalDateNow() + 5 * 60 * 1000;
+    try {
+      // Simulate the API host clock running ahead of PostgreSQL. The active
+      // lease must be judged by the database clock that created its expiry.
+      accepted = await ack();
+    } finally {
+      Date.now = originalDateNow;
+    }
     assert.equal(accepted.statusCode, 202);
     assert.equal(accepted.json().data.duplicate, false);
     const duplicate = await ack();
