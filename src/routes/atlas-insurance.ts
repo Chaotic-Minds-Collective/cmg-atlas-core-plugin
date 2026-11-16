@@ -98,7 +98,8 @@ export async function registerAtlasInsuranceRoutes(app: FastifyInstance): Promis
     const client = await pool.connect();
 
     try {
-      await client.query("BEGIN");
+      // Fresh reads after lock waits keep retries and entitlement counts current.
+      await client.query("BEGIN ISOLATION LEVEL READ COMMITTED");
       // Serialize retries even before a claim row exists to lock.
       await client.query(
         "SELECT pg_advisory_xact_lock(hashtext($1), hashtext($2))",
