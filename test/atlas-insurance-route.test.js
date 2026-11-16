@@ -43,7 +43,7 @@ test("ATLAS insurance claims require evidence and platform-admin approval", {
       );
       await pool.query(
         "INSERT INTO core.users (principal_id, username) VALUES ($1, $2)",
-        [id, "insurance-" + id]
+        [id, "ins-" + id.slice(0, 12)]
       );
     }
 
