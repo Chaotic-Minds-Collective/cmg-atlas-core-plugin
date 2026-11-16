@@ -233,13 +233,8 @@ export async function registerAtlasInsuranceRoutes(app: FastifyInstance): Promis
       const entitlementResult = await client.query<{
         id: string;
         quantity: number;
-        claims_used: number;
       }>(
-        `SELECT e.id, e.quantity,
-                (SELECT COUNT(*)::integer
-                   FROM operations.atlas_insurance_claims c
-                  WHERE c.entitlement_id = e.id
-                    AND c.status IN ('submitted', 'approved')) AS claims_used
+        `SELECT e.id, e.quantity
            FROM commerce.entitlements e
            JOIN commerce.atlas_insurance_products ip ON ip.product_id = e.product_id
            JOIN commerce.order_items oi ON oi.id = e.order_item_id
@@ -266,7 +261,20 @@ export async function registerAtlasInsuranceRoutes(app: FastifyInstance): Promis
         [principalId, parsed.data.assetKind, event.occurred_at]
       );
       const eligibleEntitlements = entitlementResult.rows;
-      const entitlement = eligibleEntitlements.find((candidate) => candidate.claims_used < candidate.quantity);
+      let entitlement: { id: string; quantity: number } | undefined;
+      for (const candidate of eligibleEntitlements) {
+        const claimCount = await client.query<{ count: number }>(
+          `SELECT COUNT(*)::integer AS count
+             FROM operations.atlas_insurance_claims
+            WHERE entitlement_id = $1
+              AND status IN ('submitted', 'approved')`,
+          [candidate.id]
+        );
+        if ((claimCount.rows[0]?.count ?? 0) < candidate.quantity) {
+          entitlement = candidate;
+          break;
+        }
+      }
       if (!entitlement) {
         await client.query("ROLLBACK");
         if (eligibleEntitlements.length) {
