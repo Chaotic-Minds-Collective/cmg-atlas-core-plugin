@@ -99,6 +99,11 @@ export async function registerAtlasInsuranceRoutes(app: FastifyInstance): Promis
 
     try {
       await client.query("BEGIN");
+      // Serialize retries even before a claim row exists to lock.
+      await client.query(
+        "SELECT pg_advisory_xact_lock(hashtext($1), hashtext($2))",
+        ["atlas.insurance.claim:" + principalId, idempotencyKey]
+      );
 
       const existing = await client.query<{
         id: string;

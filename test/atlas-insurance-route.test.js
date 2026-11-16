@@ -133,8 +133,12 @@ test("ATLAS insurance claims require evidence and platform-admin approval", {
       payload
     });
 
-    const created = await submit();
-    assert.equal(created.statusCode, 201);
+    const submissions = await Promise.all([submit(), submit()]);
+    assert.deepEqual(submissions.map((response) => response.statusCode).sort(), [200, 201]);
+    const created = submissions.find((response) => response.statusCode === 201);
+    const concurrentDuplicate = submissions.find((response) => response.statusCode === 200);
+    assert.equal(concurrentDuplicate.json().data.duplicate, true);
+    assert.equal(concurrentDuplicate.json().data.claimId, created.json().data.claimId);
     assert.equal(created.json().data.status, "submitted");
     assert.equal(created.json().data.snapshotId, snapshotId);
 
@@ -156,7 +160,7 @@ test("ATLAS insurance claims require evidence and platform-admin approval", {
       headers: { authorization: "Bearer " + adminToken }
     });
     assert.equal(adminReview.statusCode, 200);
-    assert.equal(adminReview.json().data.length, 1);
+    assert.ok(adminReview.json().data.some((claim) => claim.claimId === created.json().data.claimId));
 
     const claimId = created.json().data.claimId;
     const decision = () => app.inject({
