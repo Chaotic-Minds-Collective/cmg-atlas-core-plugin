@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { randomBytes, randomUUID } from "node:crypto";
+import { randomBytes, randomInt, randomUUID } from "node:crypto";
 import Fastify from "fastify";
 import { pool } from "../dist/db.js";
 import { hashToken } from "../dist/auth/session.js";
@@ -23,7 +23,7 @@ test("ATLAS insurance claims require evidence and platform-admin approval", {
   const entitlementId = randomUUID();
   const gridId = "insurance-test-" + randomUUID();
   const assetId = "tame-" + randomUUID();
-  const steamId = "76561198000000001";
+  const steamId = "7656119" + String(randomInt(1_000_000_000, 9_999_999_999));
   const lossEventId = "loss-" + randomUUID();
   const snapshotId = randomUUID();
   const claimKey = "claim-" + randomUUID();

@@ -180,7 +180,7 @@ test("encrypted asset snapshots are server-scoped, durable, idempotent, and retr
     assert.equal(deletedWrite.statusCode, 404, deletedWrite.body);
   } finally {
     await pool.query("DELETE FROM operations.asset_snapshots WHERE server_id = ANY($1::uuid[])", [[serverId, otherServerId]]);
-    await pool.query("DELETE FROM operations.audit_logs WHERE actor_principal_id = $1", [principalId]);
+    await pool.query("DELETE FROM operations.audit_logs WHERE actor_principal_id = ANY($1::uuid[])", [[principalId, readerPrincipalId]]);
     await pool.query("DELETE FROM core.service_credentials WHERE principal_id = ANY($1::uuid[])", [[principalId, readerPrincipalId]]);
     await pool.query("DELETE FROM core.principal_role_assignments WHERE principal_id = ANY($1::uuid[])", [[principalId, readerPrincipalId]]);
     await pool.query("DELETE FROM core.service_accounts WHERE principal_id = ANY($1::uuid[])", [[principalId, readerPrincipalId]]);
