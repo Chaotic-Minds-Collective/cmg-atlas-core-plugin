@@ -17,6 +17,9 @@ test("ATLAS insurance claims require evidence and platform-admin approval", {
   const clusterId = randomUUID();
   const serverId = randomUUID();
   const productId = randomUUID();
+  const orderId = randomUUID();
+  const orderItemId = randomUUID();
+  const paymentId = randomUUID();
   const entitlementId = randomUUID();
   const gridId = "insurance-test-" + randomUUID();
   const assetId = "tame-" + randomUUID();
@@ -29,6 +32,8 @@ test("ATLAS insurance claims require evidence and platform-admin approval", {
   const lossAt = new Date(Date.now() - 60 * 60 * 1000);
   const snapshotAt = new Date(lossAt.getTime() - 60 * 60 * 1000);
   const grantedAt = new Date(lossAt.getTime() - 24 * 60 * 60 * 1000);
+  const paymentVerifiedAt = new Date(grantedAt.getTime() + 60 * 1000);
+  const entitlementGrantedAt = new Date(grantedAt.getTime() + 2 * 60 * 1000);
 
   try {
     for (const id of [principalId, adminId]) {
@@ -64,8 +69,26 @@ test("ATLAS insurance claims require evidence and platform-admin approval", {
       [productId]
     );
     await pool.query(
-      "INSERT INTO commerce.entitlements (id, principal_id, product_id, quantity, status, granted_at) VALUES ($1, $2, $3, 1, 'active', $4)",
-      [entitlementId, principalId, productId, grantedAt]
+      `INSERT INTO commerce.orders
+        (id, principal_id, status, currency, subtotal_minor, tax_minor, total_minor, idempotency_key, created_at)
+       VALUES ($1, $2, 'paid', 'USD', 100, 0, 100, $3, $4)`,
+      [orderId, principalId, "insurance-order-" + orderId, grantedAt]
+    );
+    await pool.query(
+      `INSERT INTO commerce.order_items
+        (id, order_id, product_id, sku_snapshot, name_snapshot, quantity, unit_amount_minor, line_total_minor)
+       VALUES ($1, $2, $3, $4, 'Tame Insurance Test', 1, 100, 100)`,
+      [orderItemId, orderId, productId, "test-insurance-" + productId]
+    );
+    await pool.query(
+      `INSERT INTO commerce.payment_transactions
+        (id, order_id, provider, provider_transaction_id, provider_event_id, status, amount_minor, currency, verified_at, created_at)
+       VALUES ($1, $2, 'stripe', $3, $4, 'succeeded', 100, 'USD', $5, $5)`,
+      [paymentId, orderId, "stripe-test-" + paymentId, "stripe-event-" + paymentId, paymentVerifiedAt]
+    );
+    await pool.query(
+      "INSERT INTO commerce.entitlements (id, principal_id, product_id, order_item_id, quantity, status, granted_at) VALUES ($1, $2, $3, $4, 1, 'active', $5)",
+      [entitlementId, principalId, productId, orderItemId, entitlementGrantedAt]
     );
 
     await pool.query(
@@ -160,6 +183,9 @@ test("ATLAS insurance claims require evidence and platform-admin approval", {
     await pool.query("DELETE FROM operations.atlas_recovery_snapshots WHERE id = $1", [snapshotId]);
     await pool.query("DELETE FROM operations.game_events WHERE server_id = $1 AND external_event_id = $2", [serverId, lossEventId]);
     await pool.query("DELETE FROM commerce.entitlements WHERE id = $1", [entitlementId]);
+    await pool.query("DELETE FROM commerce.payment_transactions WHERE id = $1", [paymentId]);
+    await pool.query("DELETE FROM commerce.order_items WHERE id = $1", [orderItemId]);
+    await pool.query("DELETE FROM commerce.orders WHERE id = $1", [orderId]);
     await pool.query("DELETE FROM commerce.atlas_insurance_products WHERE product_id = $1", [productId]);
     await pool.query("DELETE FROM commerce.products WHERE id = $1", [productId]);
     await pool.query("DELETE FROM games_atlas.maps WHERE server_id = $1", [serverId]);

@@ -191,6 +191,10 @@ export async function registerAtlasInsuranceRoutes(app: FastifyInstance): Promis
         await client.query("ROLLBACK");
         return sendError(reply, 409, "VERIFIED_LOSS_EVENT_REQUIRED", "A matching server-recorded tame death or ship sinking event is required.");
       }
+      if (event.occurred_at.getTime() > Date.now() + 5 * 60 * 1000) {
+        await client.query("ROLLBACK");
+        return sendError(reply, 409, "LOSS_EVENT_TIME_INVALID", "The recorded loss event timestamp is too far in the future.");
+      }
       if (event.payload.assetId !== parsed.data.assetId || event.payload.ownerId !== steamId) {
         await client.query("ROLLBACK");
         return sendError(reply, 409, "LOSS_EVENT_OWNERSHIP_MISMATCH", "The recorded loss event does not match the requested asset and verified Steam owner.");
@@ -232,12 +236,20 @@ export async function registerAtlasInsuranceRoutes(app: FastifyInstance): Promis
         `SELECT e.id, e.quantity
            FROM commerce.entitlements e
            JOIN commerce.atlas_insurance_products ip ON ip.product_id = e.product_id
+           JOIN commerce.order_items oi ON oi.id = e.order_item_id
+           JOIN commerce.orders o ON o.id = oi.order_id AND o.principal_id = e.principal_id
+           JOIN commerce.payment_transactions pt
+             ON pt.order_id = o.id
+            AND pt.status = 'succeeded'
+            AND pt.verified_at IS NOT NULL
           WHERE e.principal_id = $1
             AND ip.asset_kind = $2
             AND e.status = 'active'
             AND e.revoked_at IS NULL
+            AND o.status = 'paid'
             AND (e.expires_at IS NULL OR e.expires_at > NOW())
             AND e.granted_at <= $3
+            AND pt.verified_at <= $3
             AND e.granted_at + (ip.coverage_seconds * INTERVAL '1 second') >= $3
             AND (e.expires_at IS NULL OR e.expires_at >= $3)
           ORDER BY e.granted_at DESC
