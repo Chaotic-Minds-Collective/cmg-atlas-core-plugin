@@ -156,6 +156,7 @@ export async function registerAtlasInsuranceRoutes(app: FastifyInstance): Promis
           WHERE s.id = $1
             AND s.cluster_id = $2
             AND s.game_key = 'atlas'
+            AND s.status <> 'deleted'
             AND m.map_key = $3`,
         [parsed.data.scope.serverId, parsed.data.scope.clusterId, parsed.data.scope.gridId]
       );
@@ -243,15 +244,19 @@ export async function registerAtlasInsuranceRoutes(app: FastifyInstance): Promis
            JOIN commerce.atlas_insurance_products ip ON ip.product_id = e.product_id
            JOIN commerce.order_items oi ON oi.id = e.order_item_id
            JOIN commerce.orders o ON o.id = oi.order_id AND o.principal_id = e.principal_id
-           JOIN commerce.payment_transactions pt
-             ON pt.order_id = o.id
-            AND pt.status = 'succeeded'
-            AND pt.verified_at IS NOT NULL
           WHERE e.principal_id = $1
             AND ip.asset_kind = $2
             AND e.status = 'active'
             AND e.revoked_at IS NULL
             AND o.status = 'paid'
+            AND EXISTS (
+              SELECT 1
+                FROM commerce.payment_transactions pt
+               WHERE pt.order_id = o.id
+                 AND pt.status = 'succeeded'
+                 AND pt.verified_at IS NOT NULL
+                 AND pt.verified_at <= $3
+            )
             AND (e.expires_at IS NULL OR e.expires_at > NOW())
             AND e.granted_at <= $3
             AND pt.verified_at <= $3
