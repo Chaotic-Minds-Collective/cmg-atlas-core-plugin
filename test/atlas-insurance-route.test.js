@@ -154,16 +154,25 @@ test("ATLAS insurance claims require evidence and platform-admin approval", {
     });
     assert.equal(playerReview.statusCode, 403);
 
+    // Put this fixture first in the bounded global queue, even in a shared database.
+    await pool.query(
+      `UPDATE operations.atlas_insurance_claims
+          SET created_at = (SELECT MIN(created_at) - INTERVAL '1 second'
+                              FROM operations.atlas_insurance_claims)
+        WHERE id = $1`,
+      [created.json().data.claimId]
+    );
+
     const adminReview = await app.inject({
       method: "GET",
       url: "/admin/atlas/insurance/claims",
       headers: { authorization: "Bearer " + adminToken }
     });
     assert.equal(adminReview.statusCode, 200);
-    // The global queue may contain older claims from other principals.
     const listedClaims = adminReview.json().data;
     assert.ok(listedClaims.length > 0 && listedClaims.length <= 50);
     assert.ok(listedClaims.every((claim) => claim.status === "submitted"));
+    assert.ok(listedClaims.some((claim) => claim.claimId === created.json().data.claimId));
 
     const claimId = created.json().data.claimId;
     const decision = () => app.inject({
