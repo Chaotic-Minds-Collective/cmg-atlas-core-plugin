@@ -135,6 +135,7 @@ test("encrypted asset snapshots are server-scoped, durable, idempotent, and retr
 
     const fetched = await app.inject({ method: "GET", url: uppercaseUrl + "/" + snapshotId.toUpperCase(), headers });
     assert.equal(fetched.statusCode, 200, fetched.body);
+    assert.equal(fetched.json().data.serverId, serverId);
     assert.equal(fetched.json().data.ciphertext, ciphertext);
     assert.equal(fetched.json().data.nonce, nonce);
     assert.equal(fetched.json().data.authTag, authTag);

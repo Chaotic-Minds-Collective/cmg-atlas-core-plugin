@@ -155,7 +155,7 @@ export async function registerSnapshotRoutes(app: FastifyInstance): Promise<void
     if (!actorId) return;
 
     const result = await pool.query(
-      "SELECT snapshot_id AS \"snapshotId\", kind, asset_id AS \"assetId\", owner_id AS \"ownerId\", cluster_id AS \"clusterId\", grid_id AS \"gridId\", captured_at AS \"capturedAt\", reason, schema_version AS \"schemaVersion\", state_bytes AS \"stateBytes\", encryption_algorithm AS \"algorithm\", encryption_key_id AS \"keyId\", encode(nonce, 'base64') AS nonce, encode(auth_tag, 'base64') AS \"authTag\", replace(encode(ciphertext, 'base64'), E'\\n', '') AS ciphertext, created_at AS \"createdAt\" FROM operations.asset_snapshots WHERE server_id = $1 AND EXISTS (SELECT 1 FROM core.servers WHERE id = $1 AND status <> 'deleted') AND snapshot_id = $2",
+      "SELECT snapshot_id AS \"snapshotId\", server_id AS \"serverId\", kind, asset_id AS \"assetId\", owner_id AS \"ownerId\", cluster_id AS \"clusterId\", grid_id AS \"gridId\", captured_at AS \"capturedAt\", reason, schema_version AS \"schemaVersion\", state_bytes AS \"stateBytes\", encryption_algorithm AS \"algorithm\", encryption_key_id AS \"keyId\", encode(nonce, 'base64') AS nonce, encode(auth_tag, 'base64') AS \"authTag\", replace(encode(ciphertext, 'base64'), E'\\n', '') AS ciphertext, created_at AS \"createdAt\" FROM operations.asset_snapshots WHERE server_id = $1 AND EXISTS (SELECT 1 FROM core.servers WHERE id = $1 AND status <> 'deleted') AND snapshot_id = $2",
       [params.data.serverId, params.data.snapshotId]
     );
     const snapshot = result.rows[0];
