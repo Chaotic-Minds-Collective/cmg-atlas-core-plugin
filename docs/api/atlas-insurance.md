@@ -54,7 +54,7 @@ Decision body:
 { "decision": "approve", "note": "Evidence reviewed" }
 ```
 
-An approval emits `atlas.insurance.recovery.authorized` to the existing Core event outbox. The event is an authorization contract for a future verified adapter; it is not proof that a restoration happened.
+An approval persists `status=approved`, `reviewed_by`, and `reviewed_at` on the claim. This is an authorization record only. It does not enqueue a game command: the current Core outbox API is restricted to `game.event.received`, and the native adapter does not yet consume recovery commands. A future adapter slice must add a server-scoped, leased claim/ack contract and verify live target ownership and scope before any restoration.
 
 ## Explicit implementation boundary
 

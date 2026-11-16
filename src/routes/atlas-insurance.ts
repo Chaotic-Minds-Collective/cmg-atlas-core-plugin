@@ -426,29 +426,6 @@ export async function registerAtlasInsuranceRoutes(app: FastifyInstance): Promis
         [claim.id, nextStatus, actorId, parsed.data.note ?? null]
       );
 
-      if (nextStatus === "approved") {
-        await client.query(
-          `INSERT INTO operations.event_outbox
-            (event_type, aggregate_type, aggregate_id, payload)
-           VALUES ('atlas.insurance.recovery.authorized', 'atlas_insurance_claim', $1, $2::jsonb)`,
-          [claim.id, JSON.stringify({
-            claimId: claim.id,
-            principalId: claim.principal_id,
-            entitlementId: claim.entitlement_id,
-            assetKind: claim.asset_kind,
-            assetId: claim.asset_id,
-            ownerSteamId: claim.owner_external_id,
-            serverId: claim.server_id,
-            clusterId: claim.cluster_id,
-            gridId: claim.grid_id,
-            lossEventId: claim.loss_event_external_id,
-            lossOccurredAt: claim.loss_occurred_at,
-            snapshotId: claim.snapshot_id,
-            authorizedBy: actorId
-          })]
-        );
-      }
-
       await client.query(
         `INSERT INTO operations.audit_logs
           (actor_principal_id, action, resource_type, resource_id, outcome, metadata)

@@ -173,13 +173,12 @@ test("ATLAS insurance claims require evidence and platform-admin approval", {
     assert.equal(repeatedApproval.statusCode, 200);
     assert.equal(repeatedApproval.json().data.duplicate, true);
 
-    const outbox = await pool.query(
-      "SELECT COUNT(*)::integer AS count FROM operations.event_outbox WHERE aggregate_type = 'atlas_insurance_claim' AND aggregate_id = $1 AND event_type = 'atlas.insurance.recovery.authorized'",
-      [claimId]
+    const approvalAudit = await pool.query(
+      "SELECT COUNT(*)::integer AS count FROM operations.audit_logs WHERE actor_principal_id = $1 AND action = 'atlas.insurance.claim.approved' AND resource_id = $2",
+      [adminId, claimId]
     );
-    assert.equal(outbox.rows[0]?.count, 1);
+    assert.equal(approvalAudit.rows[0]?.count, 1);
   } finally {
-    await pool.query("DELETE FROM operations.event_outbox WHERE aggregate_type = 'atlas_insurance_claim' AND aggregate_id::text IN (SELECT id::text FROM operations.atlas_insurance_claims WHERE principal_id = ANY($1::uuid[]))", [[principalId]]);
     await pool.query("DELETE FROM operations.audit_logs WHERE actor_principal_id = ANY($1::uuid[])", [[principalId, adminId]]);
     await pool.query("DELETE FROM operations.atlas_insurance_claims WHERE principal_id = $1", [principalId]);
     await pool.query("DELETE FROM operations.asset_snapshots WHERE snapshot_id = $1", [snapshotId]);
