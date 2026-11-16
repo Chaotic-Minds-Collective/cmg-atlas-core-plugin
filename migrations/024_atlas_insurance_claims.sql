@@ -1,3 +1,34 @@
+ALTER TABLE operations.game_events
+  DROP CONSTRAINT IF EXISTS game_events_event_type_check;
+
+ALTER TABLE operations.game_events
+  ADD CONSTRAINT game_events_event_type_check
+  CHECK (event_type IN (
+    'player.joined',
+    'player.left',
+    'player.connected',
+    'player.disconnected',
+    'player.chat',
+    'player.died',
+    'player.killed',
+    'character.created',
+    'character.transferred',
+    'tribe.created',
+    'tribe.member.joined',
+    'tribe.member.left',
+    'tribe.updated',
+    'chat.global',
+    'chat.tribe',
+    'ship.sunk',
+    'ship.retrieved',
+    'structure.destroyed',
+    'tame.created',
+    'tame.died',
+    'server.started',
+    'server.stopped',
+    'server.state.changed'
+  ));
+
 CREATE TABLE commerce.atlas_insurance_products (
   product_id UUID PRIMARY KEY REFERENCES commerce.products(id) ON DELETE RESTRICT,
   asset_kind TEXT NOT NULL CHECK (asset_kind IN ('tame', 'ship')),
