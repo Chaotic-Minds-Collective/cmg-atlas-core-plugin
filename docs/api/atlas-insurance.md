@@ -4,7 +4,7 @@ This Core slice implements evidence-backed insurance claim submission and platfo
 
 ## Product configuration
 
-Create the store product through the existing commerce product administration flow, using the existing `game_entitlement` product type. Configure the insurance product with one row in `commerce.atlas_insurance_products`:
+Create the store product through the existing commerce product administration flow, using the existing `game_entitlement` product type. This PR does not add a product-mapping administration endpoint; the insurance mapping must be added through a reviewed database operation until that control surface is implemented. Configure the insurance product with one row in `commerce.atlas_insurance_products`:
 
 - `product_id`: the commerce product UUID
 - `asset_kind`: `tame` or `ship`
@@ -33,6 +33,7 @@ Requires a player bearer session and an `Idempotency-Key` header (8–128 charac
 
 Core requires:
 - A verified, currently active Steam link for the player.
+- A server-ingested loss event. The current native adapter only publishes player lifecycle events; it does not yet emit tame-death or ship-sinking events. Those event types are accepted by Core, but real claims remain unavailable until a verified adapter implementation publishes them with the required evidence.
 - A registered ATLAS server, cluster, and grid that match exactly.
 - A server-ingested `tame.died` or `ship.sunk` event matching the asset ID and verified Steam owner. The normalized event payload must include `assetId` and `ownerId`; `ownerId` must be the SteamID64 recorded on the verified account link. The loss timestamp may not be more than five minutes in the future.
 - An active insurance entitlement backed by a paid order and a successful payment transaction with a non-null verification timestamp, covering the loss timestamp.
