@@ -1,3 +1,15 @@
+INSERT INTO core.roles (role_key, description)
+VALUES ('asset_snapshot_reader', 'Read-only access to encrypted ATLAS asset snapshots')
+ON CONFLICT (role_key) DO NOTHING;
+
+INSERT INTO core.role_permissions (role_id, permission_id)
+SELECT r.id, p.id
+  FROM core.roles r
+  CROSS JOIN core.permissions p
+ WHERE r.role_key = 'asset_snapshot_reader'
+   AND p.permission_key = 'snapshots.read'
+ON CONFLICT DO NOTHING;
+
 ALTER TABLE operations.game_events
   DROP CONSTRAINT IF EXISTS game_events_event_type_check;
 
