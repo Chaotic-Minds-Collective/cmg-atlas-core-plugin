@@ -110,12 +110,14 @@ test("ATLAS insurance claims require evidence and platform-admin approval", {
       [serverId, clusterId, gridId, lossEventId, JSON.stringify({ assetId, ownerId: steamId }), lossAt]
     );
     await pool.query(
-      `INSERT INTO operations.atlas_recovery_snapshots
-        (id, server_id, cluster_id, grid_id, snapshot_id, snapshot_kind, asset_id,
-         owner_id, captured_at, state, state_bytes, reason)
-       VALUES ($1, $2, $3, $4, $5, 'tame', $6, $7, $8, $9::jsonb, $10, 'scheduled')`,
-      [snapshotId, serverId, clusterId, gridId, "snapshot-" + snapshotId, assetId, steamId,
-        snapshotAt, JSON.stringify({ tame: { level: 100 } }), 22]
+      `INSERT INTO operations.asset_snapshots
+        (snapshot_id, server_id, cluster_id, grid_id, kind, asset_id, owner_id,
+         captured_at, reason, schema_version, encryption_algorithm, encryption_key_id,
+         nonce, auth_tag, ciphertext, ciphertext_bytes, state_bytes)
+       VALUES ($1, $2, $3, $4, 'tame', $5, $6, $7, 'pre-loss', 1, 'AES-256-GCM',
+               $8, $9, $10, $11, 32, 22)`,
+      [snapshotId, serverId, clusterId, gridId, assetId, steamId, snapshotAt,
+        "test-key-" + snapshotId, randomBytes(12), randomBytes(16), randomBytes(32)]
     );
 
     const payload = {
@@ -180,7 +182,7 @@ test("ATLAS insurance claims require evidence and platform-admin approval", {
     await pool.query("DELETE FROM operations.event_outbox WHERE aggregate_type = 'atlas_insurance_claim' AND aggregate_id IN (SELECT id::text FROM operations.atlas_insurance_claims WHERE principal_id = ANY($1::uuid[]))", [[principalId]]);
     await pool.query("DELETE FROM operations.audit_logs WHERE actor_principal_id = ANY($1::uuid[])", [[principalId, adminId]]);
     await pool.query("DELETE FROM operations.atlas_insurance_claims WHERE principal_id = $1", [principalId]);
-    await pool.query("DELETE FROM operations.atlas_recovery_snapshots WHERE id = $1", [snapshotId]);
+    await pool.query("DELETE FROM operations.asset_snapshots WHERE snapshot_id = $1", [snapshotId]);
     await pool.query("DELETE FROM operations.game_events WHERE server_id = $1 AND external_event_id = $2", [serverId, lossEventId]);
     await pool.query("DELETE FROM commerce.entitlements WHERE id = $1", [entitlementId]);
     await pool.query("DELETE FROM commerce.payment_transactions WHERE id = $1", [paymentId]);

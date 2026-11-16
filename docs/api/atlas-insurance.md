@@ -59,7 +59,7 @@ An approval emits `atlas.insurance.recovery.authorized` to the existing Core eve
 ## Explicit implementation boundary
 
 - Core validates coverage, ownership evidence, loss event, scope, snapshot, and admin review.
-- Core does not perform native tame/ship restoration.
+- Core validates against the encrypted `operations.asset_snapshots` evidence store; it does not read or decrypt snapshot state during claim submission. Core does not perform native tame/ship restoration.
 - The adapter must later verify its live target and consume the authorization on the exact server/grid.
 - No native restore API or callback is assumed.
 - No production migration, product activation, payment configuration, deployment, or live-server change is performed by this PR.

@@ -201,12 +201,12 @@ export async function registerAtlasInsuranceRoutes(app: FastifyInstance): Promis
       }
 
       const snapshot = await client.query<{ id: string }>(
-        `SELECT id
-           FROM operations.atlas_recovery_snapshots
+        `SELECT snapshot_id AS id
+           FROM operations.asset_snapshots
           WHERE server_id = $1
             AND cluster_id = $2
             AND grid_id = $3
-            AND snapshot_kind = $4
+            AND kind = $4
             AND asset_id = $5
             AND owner_id = $6
             AND captured_at < $7

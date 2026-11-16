@@ -18,7 +18,7 @@ CREATE TABLE operations.atlas_insurance_claims (
   loss_event_record_id UUID NOT NULL REFERENCES operations.game_events(id) ON DELETE RESTRICT,
   loss_event_external_id TEXT NOT NULL,
   loss_occurred_at TIMESTAMPTZ NOT NULL,
-  snapshot_id UUID NOT NULL REFERENCES operations.atlas_recovery_snapshots(id) ON DELETE RESTRICT,
+  snapshot_id UUID NOT NULL REFERENCES operations.asset_snapshots(snapshot_id) ON DELETE RESTRICT,
   idempotency_key TEXT NOT NULL CHECK (length(idempotency_key) BETWEEN 8 AND 128),
   request_hash TEXT NOT NULL CHECK (request_hash ~ '^[a-f0-9]{64}$'),
   status TEXT NOT NULL DEFAULT 'submitted' CHECK (status IN ('submitted', 'approved', 'denied')),
