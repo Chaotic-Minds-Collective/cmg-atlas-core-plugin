@@ -33,7 +33,7 @@ Order creation snapshots the selected product name, SKU and price, writes a `com
 
 `POST /commerce/orders/:orderId/checkout`
 
-Requires the order owner's player bearer session and an `Idempotency-Key` header (8–128 characters). Core verifies order ownership and pending status, then creates or reuses a Stripe Checkout session in **test mode**. The response includes `checkoutUrl`, `sessionId` and `expiresAt`.
+Requires the order owner's player bearer session and an `Idempotency-Key` header (8–128 characters). Core verifies order ownership and accepts orders in `pending` or `awaiting_payment` state. If an unexpired Stripe transaction with an active checkout URL already exists, Core returns that session. If the prior session failed or expired, Core creates a replacement session using a derived provider idempotency key. The order remains `awaiting_payment` until a verified webhook changes its state. The response includes `checkoutUrl`, `sessionId` and `expiresAt`.
 
 The Stripe secret and webhook signing secret stay in the Core API environment. Live-mode keys are rejected by the current checkout capability gate. The browser redirect is not proof of payment.
 
@@ -70,9 +70,11 @@ Requires a player bearer session. Returns the authenticated player's recent orde
 These endpoints are for an authenticated, server-scoped service credential—not a browser or player token.
 
 - `POST /integrations/servers/:serverId/rewards/claim` requires `rewards.claim`. The optional `limit` is 1–100. Core leases eligible jobs for 120 seconds and returns the delivery payload, stable idempotency key and lease expiry.
-- `POST /integrations/servers/:serverId/rewards/:rewardId/ack` requires `rewards.ack`. The worker reports `delivered` or `failed` while holding the active lease. Core records the attempt and audit entry; failed jobs receive a bounded retry delay.
+- `POST /integrations/servers/:serverId/rewards/:rewardId/ack` requires `rewards.ack`. The worker reports `delivered` or `failed`; Core records the attempt and audit entry, and failed jobs receive a bounded retry delay.
 
-The routes and lease schema exist, but they are not themselves a running worker. The worker must perform the game-side grant and acknowledge `delivered` only after confirming the result. The native ATLAS grant adapter still requires isolated runtime validation.
+**Lease-fencing limitation:** the current acknowledgement check verifies the service principal and that the reward lease has not expired, but it does not require a unique per-claim attempt token or lease-generation value. A stale worker using the same service principal may therefore not be distinguishable after a later claim. Do not rely on the acknowledgement endpoint alone to prevent duplicate game grants.
+
+The claim response includes a stable `idempotencyKey`. The worker/game adapter must persist and enforce grant-side deduplication with that key (or the immutable reward ID) across retries, disconnects and restarts. It must acknowledge `delivered` only after confirming the grant. A future Core hardening change should add a unique lease token/generation to each claim and require it on acknowledgement. The routes and lease schema exist, but they are not themselves a running worker. The native ATLAS grant adapter still requires isolated runtime validation.
 
 ## Wallet API status
 
