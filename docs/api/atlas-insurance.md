@@ -1,0 +1,66 @@
+# ATLAS Insurance Claims API
+
+This Core slice implements evidence-backed insurance claim submission and platform-admin review. It does not restore a tame or ship in the game.
+
+## Product configuration
+
+Create the store product through the existing commerce product administration flow, using the existing `game_entitlement` product type. This PR does not add a product-mapping administration endpoint; the insurance mapping must be added through a reviewed database operation until that control surface is implemented. Configure the insurance product with one row in `commerce.atlas_insurance_products`:
+
+- `product_id`: the commerce product UUID
+- `asset_kind`: `tame` or `ship`
+- `coverage_seconds`: coverage duration from the entitlement grant time
+
+Entitlements continue to be granted only by the existing verified payment flow. This feature does not create a parallel store or payment path.
+
+## Submit a claim
+
+`POST /account/atlas/insurance/claims`
+
+Requires a player bearer session and an `Idempotency-Key` header (8–128 characters).
+
+```json
+{
+  "assetKind": "tame",
+  "assetId": "server-asset-id",
+  "lossEventId": "adapter-event-id",
+  "scope": {
+    "serverId": "00000000-0000-4000-8000-000000000001",
+    "clusterId": "00000000-0000-4000-8000-000000000002",
+    "gridId": "NA-PVE-01"
+  }
+}
+```
+
+Core requires:
+- A verified, currently active Steam link for the player.
+- A server-ingested loss event. The current native adapter only publishes player lifecycle events; it does not yet emit tame-death or ship-sinking events. Those event types are accepted by Core, but real claims remain unavailable until a verified adapter implementation publishes them with the required evidence.
+- A registered ATLAS server, cluster, and grid that match exactly.
+- A server-ingested `tame.died` or `ship.sunk` event matching the asset ID and verified Steam owner. The normalized event payload must include `assetId` and `ownerId`; `ownerId` must be the SteamID64 recorded on the verified account link. The loss timestamp may not be more than five minutes in the future.
+- An active insurance entitlement backed by a paid order and a successful payment transaction with a non-null verification timestamp, covering the loss timestamp.
+- An eligible pre-loss recovery snapshot for the same asset, owner, server, cluster, and grid.
+- An unused claim allowance on that entitlement.
+
+Repeated requests with the same principal, idempotency key, and body return the original claim. Reusing the key with a different body returns a conflict. A loss event can be claimed only once.
+
+## Admin review
+
+- `GET /admin/atlas/insurance/claims?status=submitted&limit=50`
+- `POST /admin/atlas/insurance/claims/:claimId/decision`
+
+Both endpoints require the `atlas.insurance.claims.review` permission assigned at platform scope. The migration grants this permission to the existing `platform_admin` role only. Player-facing UI restrictions are not used as authorization.
+
+Decision body:
+
+```json
+{ "decision": "approve", "note": "Evidence reviewed" }
+```
+
+An approval persists `status=approved`, `reviewed_by`, and `reviewed_at` on the claim. This is an authorization record only. It does not enqueue a game command: the current Core outbox API is restricted to `game.event.received`, and the native adapter does not yet consume recovery commands. A future adapter slice must add a server-scoped, leased claim/ack contract and verify live target ownership and scope before any restoration.
+
+## Explicit implementation boundary
+
+- Core validates coverage, ownership evidence, loss event, scope, snapshot, and admin review.
+- Core validates against the encrypted `operations.asset_snapshots` evidence store; it does not read or decrypt snapshot state during claim submission. Core does not perform native tame/ship restoration.
+- The adapter must later verify its live target and consume the authorization on the exact server/grid.
+- No native restore API or callback is assumed.
+- No production migration, product activation, payment configuration, deployment, or live-server change is performed by this PR.

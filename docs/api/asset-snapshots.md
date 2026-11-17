@@ -17,7 +17,7 @@ The producer must encrypt serialized snapshot state before sending it to Core. E
 
 POST /integrations/servers/{serverId}/snapshots
 
-Requires a service credential with asset_snapshot_manager assigned to the exact server scope.
+Writes require a service credential with `asset_snapshot_manager` assigned to the exact server scope. Reads can use the narrower `asset_snapshot_reader` role, which grants only `snapshots.read`.
 
 Request:
 
@@ -47,9 +47,9 @@ A new snapshot returns 201 with durable: true and a persistence receipt. Replayi
 
 ## List snapshots for a lost asset
 
-GET /integrations/servers/{serverId}/snapshots?kind=ship&assetId=provider-ship-id&before=<ISO-8601>&limit=25
+GET /integrations/servers/{serverId}/snapshots?kind=ship&assetId=provider-ship-id&ownerId=provider-owner-id&before=<ISO-8601>&limit=25
 
-kind and assetId are required. before is optional and exclusive; it selects snapshots captured before a loss event. limit defaults to 25 and is bounded from 1 to 100. The list contains metadata only, not ciphertext.
+kind and assetId are required. ownerId is optional and applies an exact owner filter. before is optional and exclusive; it selects snapshots captured before a loss event. limit defaults to 25 and is bounded from 1 to 100. The list contains metadata only, not ciphertext.
 
 ## Retrieve one encrypted snapshot
 
@@ -63,7 +63,7 @@ Returns the encrypted envelope and metadata only for the requested server. Decry
 npm run service:create -- atlas-snapshot-store --role asset_snapshot_manager --scope-type server --scope-id <SERVER_UUID>
 ```
 
-The role grants only snapshots.write and snapshots.read. Each environment and server should use a distinct service identity.
+`asset_snapshot_manager` grants `snapshots.write` and `snapshots.read`; `asset_snapshot_reader` grants only `snapshots.read`. Each environment and server should use a distinct service identity.
 
 ## Boundaries and operational gates
 
