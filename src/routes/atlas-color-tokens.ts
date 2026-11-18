@@ -63,10 +63,6 @@ const ackSchema = z.object({
   }
 });
 
-function sendError(reply: Parameters<Parameters<FastifyInstance["post"]>[1]>[1], status: number, code: string, message: string) {
-  return reply.code(status).send({ error: { code, message } });
-}
-
 export async function registerAtlasColorTokenRoutes(app: FastifyInstance): Promise<void> {
   app.post("/account/atlas/color-token-applications", async (request, reply) => {
     if (!pool) return reply.code(503).send({ error: { code: "DATABASE_UNAVAILABLE", message: "ATLAS color-token applications are temporarily unavailable." } });
@@ -427,7 +423,7 @@ export async function registerAtlasColorTokenRoutes(app: FastifyInstance): Promi
       }>(
         `SELECT a.id, a.status, a.attempts, a.claimed_by_principal_id,
                 a.lease_token,
-                (a.lease_expires_at > clock_timestamp()) AS lease_active,
+                COALESCE(a.lease_expires_at > clock_timestamp(), false) AS lease_active,
                 a.entitlement_id, a.token_kind, a.asset_id, a.selected_color
            FROM operations.atlas_color_token_applications a
            JOIN core.servers s ON s.id = a.server_id AND s.game_key = 'atlas'
@@ -490,13 +486,14 @@ export async function registerAtlasColorTokenRoutes(app: FastifyInstance): Promi
       await client.query(
         `INSERT INTO operations.audit_logs
           (actor_principal_id, action, resource_type, resource_id, outcome, metadata)
-         VALUES ($1, $2, 'atlas_color_token_application', $3, 'success', $4::jsonb)`,
+         VALUES ($1, $2, 'atlas_color_token_application', $3, $4, $5::jsonb)`,
         [
           actorId,
           body.data.outcome === "applied"
             ? "atlas.color_token.application.applied"
             : "atlas.color_token.application.failed",
           application.id,
+          body.data.outcome === "applied" ? "success" : "failure",
           JSON.stringify({
             entitlementId: application.entitlement_id,
             tokenKind: application.token_kind,
