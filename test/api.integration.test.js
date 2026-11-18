@@ -303,11 +303,38 @@ test("public server listing hides unlisted servers and reward workers use leased
     assert.equal(claimed[0].id, ids.reward);
     assert.equal(claimed[0].attempts, 1);
 
+    assert.match(claimed[0].leaseToken, /^[0-9a-f-]{36}$/i);
+    const originalLeaseToken = claimed[0].leaseToken;
+    const missingFence = await app.inject({
+      method: "POST",
+      url: "/integrations/servers/" + ids.publicServer + "/rewards/" + ids.reward + "/ack",
+      headers: { authorization: "Bearer " + token },
+      payload: { outcome: "delivered" },
+    });
+    assert.equal(missingFence.statusCode, 400);
+    await pool.query("UPDATE commerce.reward_queue SET lease_expires_at = NOW() - INTERVAL '1 second' WHERE id = $1", [ids.reward]);
+    const reclaim = await app.inject({
+      method: "POST",
+      url: "/integrations/servers/" + ids.publicServer + "/rewards/claim",
+      headers: { authorization: "Bearer " + token },
+      payload: { limit: 5 },
+    });
+    assert.equal(reclaim.statusCode, 200, reclaim.body);
+    const leaseToken = reclaim.json().data[0].leaseToken;
+    assert.notEqual(leaseToken, originalLeaseToken);
+    const staleFence = await app.inject({
+      method: "POST",
+      url: "/integrations/servers/" + ids.publicServer + "/rewards/" + ids.reward + "/ack",
+      headers: { authorization: "Bearer " + token },
+      payload: { leaseToken: originalLeaseToken, outcome: "delivered" },
+    });
+    assert.equal(staleFence.statusCode, 409);
+
     const ackResponse = await app.inject({
       method: "POST",
       url: "/integrations/servers/" + ids.publicServer + "/rewards/" + ids.reward + "/ack",
       headers: { authorization: "Bearer " + token },
-      payload: { outcome: "delivered", response: { receipt: "test-grant" } },
+      payload: { leaseToken, outcome: "delivered", response: { receipt: "test-grant" } },
     });
     assert.equal(ackResponse.statusCode, 202, ackResponse.body);
     assert.equal(ackResponse.json().data.duplicate, false);
@@ -316,14 +343,14 @@ test("public server listing hides unlisted servers and reward workers use leased
       method: "POST",
       url: "/integrations/servers/" + ids.publicServer + "/rewards/" + ids.reward + "/ack",
       headers: { authorization: "Bearer " + token },
-      payload: { outcome: "delivered", response: { receipt: "test-grant" } },
+      payload: { leaseToken, outcome: "delivered", response: { receipt: "test-grant" } },
     });
     assert.equal(duplicateAck.statusCode, 202);
     assert.equal(duplicateAck.json().data.duplicate, true);
 
     const stored = await pool.query("SELECT status, attempts FROM commerce.reward_queue WHERE id = $1", [ids.reward]);
     assert.equal(stored.rows[0].status, "delivered");
-    assert.equal(stored.rows[0].attempts, 1);
+    assert.equal(stored.rows[0].attempts, 2);
   } finally {
     await pool.query(
       "DELETE FROM operations.event_outbox WHERE event_type = 'game.event.received' AND payload->>'eventId' = ANY($1::text[])",
