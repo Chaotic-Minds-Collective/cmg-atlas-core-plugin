@@ -15,6 +15,7 @@ test("ATLAS color-token applications reserve uses and consume only after adapter
 
   const principalId = randomUUID();
   const serviceId = randomUUID();
+  const wrongScopeServiceId = randomUUID();
   const clusterId = randomUUID();
   const serverId = randomUUID();
   const productId = randomUUID();
@@ -27,14 +28,15 @@ test("ATLAS color-token applications reserve uses and consume only after adapter
   const playerToken = randomBytes(32).toString("base64url");
   const serviceToken = "cg_srv_" + randomBytes(36).toString("base64url");
   const unassignedServiceToken = "cg_srv_" + randomBytes(36).toString("base64url");
+  const wrongScopeServiceToken = "cg_srv_" + randomBytes(36).toString("base64url");
   const now = new Date();
   const applicationIds = [];
   const appKeys = [randomUUID(), randomUUID(), randomUUID(), randomUUID(), randomUUID()];
 
   try {
     await pool.query(
-      "INSERT INTO core.principals (id, principal_type, status) VALUES ($1, 'user', 'active'), ($2, 'service', 'active')",
-      [principalId, serviceId]
+      "INSERT INTO core.principals (id, principal_type, status) VALUES ($1, 'user', 'active'), ($2, 'service', 'active'), ($3, 'service', 'active')",
+      [principalId, serviceId, wrongScopeServiceId]
     );
     await pool.query(
       "INSERT INTO core.users (principal_id, username) VALUES ($1, $2)",
@@ -45,8 +47,16 @@ test("ATLAS color-token applications reserve uses and consume only after adapter
       [serviceId, "color-token-test-" + serviceId]
     );
     await pool.query(
+      "INSERT INTO core.service_accounts (principal_id, application_name, description) VALUES ($1, $2, 'Wrong-scope ATLAS test worker')",
+      [wrongScopeServiceId, "color-token-wrong-scope-test-" + wrongScopeServiceId]
+    );
+    await pool.query(
       "INSERT INTO core.service_credentials (principal_id, credential_hash, label) VALUES ($1, $2, 'test credential')",
       [serviceId, hashServiceToken(serviceToken)]
+    );
+    await pool.query(
+      "INSERT INTO core.service_credentials (principal_id, credential_hash, label) VALUES ($1, $2, 'wrong-scope test credential')",
+      [wrongScopeServiceId, hashServiceToken(wrongScopeServiceToken)]
     );
     await pool.query(
       "INSERT INTO core.auth_sessions (principal_id, token_hash, expires_at) VALUES ($1, $2, NOW() + INTERVAL '1 hour')",
@@ -72,6 +82,10 @@ test("ATLAS color-token applications reserve uses and consume only after adapter
     await pool.query(
       "INSERT INTO core.principal_role_assignments (principal_id, role_id, scope_type, scope_id) SELECT $1, id, 'server', $2 FROM core.roles WHERE role_key = 'atlas_color_token_worker'",
       [serviceId, serverId]
+    );
+    await pool.query(
+      "INSERT INTO core.principal_role_assignments (principal_id, role_id, scope_type, scope_id) SELECT $1, id, 'cluster', $2 FROM core.roles WHERE role_key = 'atlas_color_token_worker'",
+      [wrongScopeServiceId, clusterId]
     );
 
     await pool.query(
@@ -195,7 +209,15 @@ test("ATLAS color-token applications reserve uses and consume only after adapter
       headers: { authorization: "Bearer " + unassignedServiceToken },
       payload: { limit: 20 }
     });
-    assert.equal(forbiddenClaim.statusCode, 403);
+    assert.equal(forbiddenClaim.statusCode, 401);
+
+    const wrongScopeClaim = await app.inject({
+      method: "POST",
+      url: `/integrations/servers/${serverId}/atlas/color-token-applications/claim`,
+      headers: { authorization: "Bearer " + wrongScopeServiceToken },
+      payload: { limit: 20 }
+    });
+    assert.equal(wrongScopeClaim.statusCode, 403);
 
     const claimedResponse = await app.inject({
       method: "POST",
@@ -291,7 +313,7 @@ test("ATLAS color-token applications reserve uses and consume only after adapter
   } finally {
     await pool.query(
       "DELETE FROM operations.audit_logs WHERE actor_principal_id = ANY($1::uuid[]) OR resource_id = ANY($2::text[])",
-      [[principalId, serviceId], applicationIds]
+      [[principalId, serviceId, wrongScopeServiceId], applicationIds]
     );
     await pool.query("DELETE FROM operations.atlas_color_token_applications WHERE principal_id = $1", [principalId]);
     await pool.query("DELETE FROM commerce.entitlements WHERE id = $1", [entitlementId]);
@@ -305,11 +327,11 @@ test("ATLAS color-token applications reserve uses and consume only after adapter
     await pool.query("DELETE FROM core.clusters WHERE id = $1", [clusterId]);
     await pool.query("DELETE FROM core.auth_sessions WHERE principal_id = $1", [principalId]);
     await pool.query("DELETE FROM core.linked_accounts WHERE principal_id = $1", [principalId]);
-    await pool.query("DELETE FROM core.principal_role_assignments WHERE principal_id = $1", [serviceId]);
-    await pool.query("DELETE FROM core.service_credentials WHERE principal_id = $1", [serviceId]);
-    await pool.query("DELETE FROM core.service_accounts WHERE principal_id = $1", [serviceId]);
+    await pool.query("DELETE FROM core.principal_role_assignments WHERE principal_id = ANY($1::uuid[])", [[serviceId, wrongScopeServiceId]]);
+    await pool.query("DELETE FROM core.service_credentials WHERE principal_id = ANY($1::uuid[])", [[serviceId, wrongScopeServiceId]]);
+    await pool.query("DELETE FROM core.service_accounts WHERE principal_id = ANY($1::uuid[])", [[serviceId, wrongScopeServiceId]]);
     await pool.query("DELETE FROM core.users WHERE principal_id = $1", [principalId]);
-    await pool.query("DELETE FROM core.principals WHERE id = ANY($1::uuid[])", [[principalId, serviceId]]);
+    await pool.query("DELETE FROM core.principals WHERE id = ANY($1::uuid[])", [[principalId, serviceId, wrongScopeServiceId]]);
     await app.close();
   }
 });
