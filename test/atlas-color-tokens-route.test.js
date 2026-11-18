@@ -209,7 +209,7 @@ test("ATLAS color-token applications reserve uses and consume only after adapter
       headers: { authorization: "Bearer " + unassignedServiceToken },
       payload: { limit: 20 }
     });
-    assert.equal(forbiddenClaim.statusCode, 401);
+    assert.equal(forbiddenClaim.statusCode, 403);
 
     const wrongScopeClaim = await app.inject({
       method: "POST",
