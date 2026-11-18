@@ -20,6 +20,20 @@ Core claims only unprocessed `game.event.received` records whose payload `server
 
 The response includes the outbox event ID, event type, aggregate metadata, payload, occurrence time, attempt count, lease token, and lease expiry. Treat the lease token as a secret and do not log it.
 
+## Renew an active lease
+
+`POST /integrations/servers/{serverId}/events/{eventId}/renew`
+
+Requires the same server-scoped service identity and active lease token that claimed the event. The `events.renew` permission is granted to the `game_event_consumer` and `atlas_quest_runtime` roles.
+
+Request:
+
+```json
+{ "leaseToken": "lease-token-from-claim", "leaseSeconds": 120 }
+```
+
+`leaseSeconds` is optional and bounded from 15 to 300 seconds. Core locks the outbox row, verifies the event is still unprocessed and the caller still owns the active lease, then extends the expiry using the database clock. A replaced, expired, or mismatched lease returns `409 EVENT_LEASE_INVALID`; a processed event returns `409 EVENT_ALREADY_PROCESSED`. The response includes the new `leaseExpiresAt` timestamp. Lease tokens remain secret and must not be logged.
+
 ## Acknowledge
 
 `POST /integrations/servers/{serverId}/events/{eventId}/ack`
@@ -44,7 +58,7 @@ Acknowledgements require the same service principal and active per-event lease t
 npm run service:create -- atlas-event-consumer --role game_event_consumer --scope-type server --scope-id <SERVER_UUID>
 ```
 
-The role grants only `events.claim` and `events.ack`. A platform-level assignment is technically supported by Core's authorization helper but is not recommended for game adapters.
+The role grants `events.claim`, `events.renew`, and `events.ack`. A platform-level assignment is technically supported by Core's authorization helper but is not recommended for game adapters.
 
 ## Delivery boundary
 

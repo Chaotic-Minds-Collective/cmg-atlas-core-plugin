@@ -17,6 +17,7 @@ import { registerServerRoutes } from "./routes/servers.js";
 import { registerSnapshotRoutes } from "./routes/snapshots.js";
 import { registerSteamLinkRoutes } from "./routes/steam-link.js";
 import { registerAtlasInsuranceRoutes } from "./routes/atlas-insurance.js";
+import { registerAtlasQuestRoutes } from "./routes/atlas-quests.js";
 
 export function buildApp() {
   const app = Fastify({
@@ -73,5 +74,6 @@ export function buildApp() {
   void registerSteamLinkRoutes(app);
   void registerDiscordLinkRoutes(app);
   void registerAtlasInsuranceRoutes(app);
+  void registerAtlasQuestRoutes(app);
   return app;
 }

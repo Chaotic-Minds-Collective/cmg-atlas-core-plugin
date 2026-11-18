@@ -9,6 +9,11 @@ const claimSchema = z.object({
   eventTypes: z.array(z.string().min(1).max(128)).min(1).max(50).optional()
 });
 
+const renewSchema = z.object({
+  leaseToken: z.string().uuid(),
+  leaseSeconds: z.number().int().min(15).max(300).default(120)
+});
+
 const ackSchema = z.object({
   leaseToken: z.string().uuid(),
   outcome: z.enum(["delivered", "failed"]),
@@ -70,6 +75,81 @@ export async function registerEventOutboxRoutes(app: FastifyInstance): Promise<v
       await client.query("ROLLBACK").catch(() => undefined);
       request.log.error({ err: error }, "Game event outbox claim failed");
       return reply.code(500).send({ error: { code: "EVENT_CLAIM_FAILED", message: "Game events could not be claimed." } });
+    } finally {
+      client.release();
+    }
+  });
+
+  app.post("/integrations/servers/:serverId/events/:eventId/renew", async (request, reply) => {
+    if (!pool) return reply.code(503).send({ error: { code: "DATABASE_UNAVAILABLE", message: "Game event lease renewal is temporarily unavailable." } });
+    const params = z.object({
+      serverId: z.string().uuid().transform((value) => value.toLowerCase()),
+      eventId: z.string().uuid()
+    }).safeParse(request.params);
+    const body = renewSchema.safeParse(request.body);
+    if (!params.success || !body.success) {
+      return reply.code(400).send({ error: { code: "VALIDATION_ERROR", message: "A valid server UUID, event UUID, lease token, and lease duration are required." } });
+    }
+
+    const actorId = await requireServicePermission(request, reply, "events.renew", "server", params.data.serverId);
+    if (!actorId) return;
+
+    const client = await pool.connect();
+    try {
+      await client.query("BEGIN");
+      const current = await client.query<{
+        id: string;
+        processed_at: Date | null;
+        claimed_by_principal_id: string | null;
+        lease_token: string | null;
+        lease_active: boolean | null;
+      }>(
+        `SELECT id, processed_at, claimed_by_principal_id, lease_token,
+                (lease_expires_at > clock_timestamp()) AS lease_active
+           FROM operations.event_outbox
+          WHERE id = $1 AND event_type = 'game.event.received'
+            AND payload->>'serverId' = $2
+          FOR UPDATE`,
+        [params.data.eventId, params.data.serverId]
+      );
+      const event = current.rows[0];
+      if (!event) {
+        await client.query("ROLLBACK");
+        return reply.code(404).send({ error: { code: "EVENT_NOT_FOUND", message: "The game event was not found for this server." } });
+      }
+      if (event.processed_at) {
+        await client.query("ROLLBACK");
+        return reply.code(409).send({ error: { code: "EVENT_ALREADY_PROCESSED", message: "A processed event lease cannot be renewed." } });
+      }
+      if (event.claimed_by_principal_id !== actorId || event.lease_token !== body.data.leaseToken || event.lease_active !== true) {
+        await client.query("ROLLBACK");
+        return reply.code(409).send({ error: { code: "EVENT_LEASE_INVALID", message: "This service does not hold the active lease for this event." } });
+      }
+
+      const renewed = await client.query<{ lease_expires_at: Date }>(
+        `UPDATE operations.event_outbox
+            SET lease_expires_at = GREATEST(lease_expires_at, clock_timestamp() + make_interval(secs => $2))
+          WHERE id = $1
+          RETURNING lease_expires_at`,
+        [event.id, body.data.leaseSeconds]
+      );
+      const leaseExpiresAt = renewed.rows[0]?.lease_expires_at;
+      if (!leaseExpiresAt) throw new Error("The event lease renewal did not return an expiry");
+      await client.query(
+        `INSERT INTO operations.audit_logs
+          (actor_principal_id, action, resource_type, resource_id, outcome, metadata)
+         VALUES ($1, 'game.event.lease.renew', 'game_event_outbox', $2, 'success', $3::jsonb)`,
+        [actorId, event.id, JSON.stringify({ leaseSeconds: body.data.leaseSeconds })]
+      );
+      await client.query("COMMIT");
+      return reply.code(200).send({
+        data: { renewed: true, eventId: event.id, leaseExpiresAt: leaseExpiresAt.toISOString() },
+        requestId: request.id
+      });
+    } catch (error) {
+      await client.query("ROLLBACK").catch(() => undefined);
+      request.log.error({ err: error }, "Game event lease renewal failed");
+      return reply.code(500).send({ error: { code: "EVENT_LEASE_RENEWAL_FAILED", message: "The game event lease could not be renewed." } });
     } finally {
       client.release();
     }
