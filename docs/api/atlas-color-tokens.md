@@ -29,8 +29,8 @@ POST /account/atlas/color-token-applications
 
 Headers:
 
-- Authorization: Bearer <player-session>
-- Idempotency-Key: <8-128 characters>
+- Authorization: Bearer [player session token]
+- Idempotency-Key: a unique 8-128 character value
 
 Body:
 
