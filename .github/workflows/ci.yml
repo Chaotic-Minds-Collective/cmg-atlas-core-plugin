@@ -16,6 +16,23 @@ concurrency:
 jobs:
   validate:
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_DB: atlas_core_test
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d atlas_core_test"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/atlas_core_test
+      STRIPE_WEBHOOK_SECRET: whsec_ci_wallet_test_secret_2026_11_18
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-node@v5
@@ -27,5 +44,7 @@ jobs:
         run: npm run typecheck
       - name: Build
         run: npm run build
+      - name: Apply database migrations
+        run: npm run db:migrate
       - name: Test
         run: npm test

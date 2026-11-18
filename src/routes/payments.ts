@@ -5,6 +5,7 @@ import { z } from "zod";
 import { requirePrincipal } from "../auth/session.js";
 import { config } from "../config.js";
 import { pool } from "../db.js";
+import { fulfillPaidOrder } from "../commerce/fulfillment.js";
 import {
   createStripeCheckoutSession,
   stripeCheckoutEnabled,
@@ -62,6 +63,15 @@ export async function registerPaymentRoutes(app: FastifyInstance): Promise<void>
       if (!["pending", "awaiting_payment"].includes(order.status)) {
         await client.query("ROLLBACK");
         return reply.code(409).send({ error: { code: "ORDER_NOT_PAYABLE", message: "This order cannot be checked out." } });
+      }
+
+      const walletCurrency = await client.query(
+        "SELECT 1 FROM commerce.product_wallet_mappings WHERE currency_code = $1 LIMIT 1",
+        [order.currency.trim().toUpperCase()]
+      );
+      if (walletCurrency.rowCount) {
+        await client.query("ROLLBACK");
+        return reply.code(409).send({ error: { code: "WALLET_CURRENCY_REQUIRES_WALLET_PAYMENT", message: "Orders priced in a wallet currency must be paid from the account wallet." } });
       }
 
       const existing = await client.query<{ provider_transaction_id: string; checkout_url: string; expires_at: Date | null }>(
@@ -128,6 +138,147 @@ export async function registerPaymentRoutes(app: FastifyInstance): Promise<void>
       await client.query("ROLLBACK").catch(() => undefined);
       request.log.error({ err: error }, "Stripe checkout session creation failed");
       return reply.code(502).send({ error: { code: "CHECKOUT_PROVIDER_UNAVAILABLE", message: "The test checkout session could not be created. No payment was taken." } });
+    } finally {
+      client.release();
+    }
+  });
+
+  app.post("/commerce/orders/:orderId/pay-with-wallet", async (request, reply) => {
+    if (!pool) return reply.code(503).send({ error: { code: "DATABASE_UNAVAILABLE", message: "Wallet checkout is temporarily unavailable." } });
+    const principalId = await requirePrincipal(request, reply);
+    if (!principalId) return;
+    const params = orderParamsSchema.safeParse(request.params);
+    if (!params.success) return reply.code(400).send({ error: { code: "INVALID_ORDER_ID", message: "A valid order ID is required." } });
+
+    const client = await pool.connect();
+    try {
+      await client.query("BEGIN");
+      const orderResult = await client.query<{
+        id: string; principal_id: string; status: string; currency: string; total_minor: string;
+      }>(
+        "SELECT id, principal_id, status, currency, total_minor::text AS total_minor FROM commerce.orders WHERE id = $1 AND principal_id = $2 FOR UPDATE",
+        [params.data.orderId, principalId]
+      );
+      const order = orderResult.rows[0];
+      if (!order) {
+        await client.query("ROLLBACK");
+        return reply.code(404).send({ error: { code: "ORDER_NOT_FOUND", message: "The order was not found." } });
+      }
+
+      if (order.status === "paid") {
+        const existingPayment = await client.query(
+          "SELECT id FROM commerce.payment_transactions WHERE order_id = $1 AND provider = 'wallet' AND status = 'succeeded' LIMIT 1",
+          [order.id]
+        );
+        if (existingPayment.rowCount) {
+          const balance = await client.query<{ balance_minor: string }>(
+            `SELECT COALESCE(SUM(CASE WHEN entry_type IN ('credit', 'refund', 'adjustment') THEN amount_minor ELSE -amount_minor END), 0)::text AS balance_minor
+               FROM commerce.wallet_ledger l JOIN commerce.wallets w ON w.id = l.wallet_id
+              WHERE w.principal_id = $1 AND w.currency_code = $2`,
+            [principalId, order.currency.trim().toUpperCase()]
+          );
+          await client.query("COMMIT");
+          return { data: { orderId: order.id, status: "paid", provider: "wallet", balanceMinor: balance.rows[0]?.balance_minor ?? "0", reused: true }, requestId: request.id };
+        }
+        await client.query("ROLLBACK");
+        return reply.code(409).send({ error: { code: "ORDER_ALREADY_PAID", message: "This order has already been paid by another payment method." } });
+      }
+      if (order.status !== "pending") {
+        await client.query("ROLLBACK");
+        return reply.code(409).send({ error: { code: "ORDER_NOT_PAYABLE", message: "Only pending orders can be paid from a wallet. Resolve or expire any external checkout first." } });
+      }
+
+      const walletCurrency = await client.query(
+        "SELECT 1 FROM commerce.product_wallet_mappings WHERE currency_code = $1 LIMIT 1",
+        [order.currency.trim().toUpperCase()]
+      );
+      if (!walletCurrency.rowCount) {
+        await client.query("ROLLBACK");
+        return reply.code(409).send({ error: { code: "WALLET_CURRENCY_NOT_CONFIGURED", message: "The order currency is not configured as a wallet currency." } });
+      }
+      const currencyPack = await client.query(
+        "SELECT 1 FROM commerce.order_items oi JOIN commerce.products p ON p.id = oi.product_id WHERE oi.order_id = $1 AND p.product_type = 'currency_pack' LIMIT 1",
+        [order.id]
+      );
+      if (currencyPack.rowCount) {
+        await client.query("ROLLBACK");
+        return reply.code(409).send({ error: { code: "CURRENCY_PACK_WALLET_PAYMENT_FORBIDDEN", message: "Currency packs must be purchased through the configured external payment provider." } });
+      }
+      const externalPayment = await client.query(
+        "SELECT 1 FROM commerce.payment_transactions WHERE order_id = $1 AND provider = 'stripe' AND status IN ('created', 'pending', 'succeeded') LIMIT 1",
+        [order.id]
+      );
+      if (externalPayment.rowCount) {
+        await client.query("ROLLBACK");
+        return reply.code(409).send({ error: { code: "EXTERNAL_PAYMENT_IN_PROGRESS", message: "An external payment attempt exists for this order. Wait for its verified result before using the wallet." } });
+      }
+
+      const total = BigInt(order.total_minor);
+      if (total <= 0n) {
+        await client.query("ROLLBACK");
+        return reply.code(400).send({ error: { code: "ORDER_HAS_NO_PAYABLE_ITEMS", message: "Wallet checkout requires a positive order total." } });
+      }
+      await client.query(
+        "INSERT INTO commerce.wallets (principal_id, currency_code) VALUES ($1, $2) ON CONFLICT (principal_id, currency_code) DO NOTHING",
+        [principalId, order.currency.trim().toUpperCase()]
+      );
+      const wallet = await client.query<{ id: string }>(
+        "SELECT id FROM commerce.wallets WHERE principal_id = $1 AND currency_code = $2 FOR UPDATE",
+        [principalId, order.currency.trim().toUpperCase()]
+      );
+      if (!wallet.rows[0]) throw new Error("Wallet row could not be created or locked.");
+      const balanceResult = await client.query<{ balance_minor: string }>(
+        `SELECT COALESCE(SUM(CASE WHEN entry_type IN ('credit', 'refund', 'adjustment') THEN amount_minor ELSE -amount_minor END), 0)::text AS balance_minor
+           FROM commerce.wallet_ledger WHERE wallet_id = $1`,
+        [wallet.rows[0].id]
+      );
+      const balance = BigInt(balanceResult.rows[0]?.balance_minor ?? "0");
+      if (balance < total) {
+        await client.query("ROLLBACK");
+        return reply.code(409).send({ error: { code: "INSUFFICIENT_WALLET_BALANCE", message: "The wallet balance is not sufficient for this order." } });
+      }
+
+      const debit = await client.query(
+        `INSERT INTO commerce.wallet_ledger (wallet_id, entry_type, amount_minor, reference_type, reference_id, idempotency_key)
+         VALUES ($1, 'debit', $2, 'order', $3, $4)
+         ON CONFLICT (idempotency_key) DO NOTHING
+         RETURNING id`,
+        [wallet.rows[0].id, total.toString(), order.id, "wallet-order:" + order.id]
+      );
+      if (!debit.rowCount) throw new Error("The wallet order debit idempotency key already exists for an unpaid order.");
+
+      const payment = await client.query<{ id: string }>(
+        `INSERT INTO commerce.payment_transactions (order_id, provider, provider_transaction_id, status, amount_minor, currency, verified_at)
+         VALUES ($1, 'wallet', $2, 'succeeded', $3, $4, NOW())
+         ON CONFLICT (provider, provider_transaction_id) DO NOTHING
+         RETURNING id`,
+        [order.id, "wallet-order:" + order.id, total.toString(), order.currency]
+      );
+      if (!payment.rows[0]) throw new Error("The wallet payment transaction already exists for an unpaid order.");
+      const paid = await client.query(
+        "UPDATE commerce.orders SET status = 'paid', updated_at = NOW() WHERE id = $1 AND status = 'pending' RETURNING id",
+        [order.id]
+      );
+      if (!paid.rowCount) throw new Error("The order state changed before wallet payment could be committed.");
+
+      await fulfillPaidOrder(client, order.id);
+      await client.query(
+        "INSERT INTO operations.event_outbox (event_type, aggregate_type, aggregate_id, payload) VALUES ('commerce.order.paid', 'order', $1, $2::jsonb)",
+        [order.id, JSON.stringify({ orderId: order.id, principalId, paymentTransactionId: payment.rows[0].id, provider: "wallet" })]
+      );
+      await client.query(
+        "INSERT INTO operations.audit_logs (actor_principal_id, action, resource_type, resource_id, outcome, metadata) VALUES ($1, 'payment.wallet.succeeded', 'order', $2, 'success', $3::jsonb)",
+        [principalId, order.id, JSON.stringify({ paymentTransactionId: payment.rows[0].id, currency: order.currency, amountMinor: total.toString() })]
+      );
+      await client.query("COMMIT");
+      return reply.code(201).send({
+        data: { orderId: order.id, status: "paid", provider: "wallet", balanceMinor: (balance - total).toString(), reused: false },
+        requestId: request.id
+      });
+    } catch (error) {
+      await client.query("ROLLBACK").catch(() => undefined);
+      request.log.error({ err: error }, "Wallet order payment failed");
+      return reply.code(500).send({ error: { code: "WALLET_PAYMENT_FAILED", message: "The order could not be paid from the wallet." } });
     } finally {
       client.release();
     }
@@ -229,23 +380,7 @@ export async function registerPaymentRoutes(app: FastifyInstance): Promise<void>
             [payment.order_id]
           );
           if (orderTransition.rowCount) {
-            await client.query(
-              "INSERT INTO commerce.entitlements (principal_id, product_id, order_item_id, quantity, status) SELECT o.principal_id, oi.product_id, oi.id, oi.quantity, 'active' FROM commerce.orders o JOIN commerce.order_items oi ON oi.order_id = o.id WHERE o.id = $1 ON CONFLICT (order_item_id) WHERE order_item_id IS NOT NULL DO NOTHING",
-              [payment.order_id]
-            );
-            await client.query(
-              "INSERT INTO commerce.reward_queue (entitlement_id, game_key, server_id, target_external_id, delivery_payload, idempotency_key) " +
-              "SELECT e.id, pgm.game_key, pgm.server_id, la.external_id, " +
-              "jsonb_build_object('deliveryType', pgm.delivery_type, 'productSku', oi.sku_snapshot, 'productName', oi.name_snapshot, 'quantity', oi.quantity, 'mapping', pgm.delivery_payload), " +
-              "'order_item:' || oi.id::text || ':' || pgm.game_key " +
-              "FROM commerce.order_items oi " +
-              "JOIN commerce.entitlements e ON e.order_item_id = oi.id " +
-              "JOIN commerce.product_game_mappings pgm ON pgm.product_id = oi.product_id AND pgm.server_id IS NOT NULL " +
-              "JOIN core.servers s ON s.id = pgm.server_id AND s.game_key = pgm.game_key " +
-              "JOIN core.linked_accounts la ON la.principal_id = e.principal_id AND la.provider = 'steam' AND la.verified_at IS NOT NULL AND la.unlinked_at IS NULL " +
-              "WHERE oi.order_id = $1 ON CONFLICT (idempotency_key) DO NOTHING",
-              [payment.order_id]
-            );
+            await fulfillPaidOrder(client, payment.order_id);
             await client.query(
               "INSERT INTO operations.event_outbox (event_type, aggregate_type, aggregate_id, payload) VALUES ('commerce.order.paid', 'order', $1, $2::jsonb)",
               [payment.order_id, JSON.stringify({ orderId: payment.order_id, principalId: payment.principal_id, paymentTransactionId: payment.id, provider: "stripe" })]
