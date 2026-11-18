@@ -72,17 +72,24 @@ These endpoints are for an authenticated, server-scoped service credential—not
 - `POST /integrations/servers/:serverId/rewards/claim` requires `rewards.claim`. The optional `limit` is 1–100. Core leases eligible jobs for 120 seconds and returns the delivery payload, stable idempotency key and lease expiry.
 - `POST /integrations/servers/:serverId/rewards/:rewardId/ack` requires `rewards.ack`. The worker reports `delivered` or `failed`; Core records the attempt and audit entry, and failed jobs receive a bounded retry delay.
 
-**Lease-fencing limitation:** the current acknowledgement check verifies the service principal and that the reward lease has not expired, but it does not require a unique per-claim attempt token or lease-generation value. A stale worker using the same service principal may therefore not be distinguishable after a later claim. Do not rely on the acknowledgement endpoint alone to prevent duplicate game grants.
+**Lease fencing:** Core requires the per-claim lease token when acknowledging a reward, so a stale worker cannot acknowledge a newer claim. The game adapter must still enforce grant-side idempotency with the stable reward ID or idempotency key; lease fencing alone cannot guarantee exactly-once game grants.
 
-The claim response includes a stable `idempotencyKey`. The worker/game adapter must persist and enforce grant-side deduplication with that key (or the immutable reward ID) across retries, disconnects and restarts. It must acknowledge `delivered` only after confirming the grant. A future Core hardening change should add a unique lease token/generation to each claim and require it on acknowledgement. The routes and lease schema exist, but they are not themselves a running worker. The native ATLAS grant adapter still requires isolated runtime validation.
+The claim response includes a stable `idempotencyKey`. The worker/game adapter must persist and enforce grant-side deduplication with that key (or the immutable reward ID) across retries, disconnects and restarts. It must acknowledge `delivered` only after confirming the grant. The routes and lease schema exist, but they are not themselves a running worker. The native ATLAS grant adapter still requires isolated runtime validation.
 
-## Wallet API status
+## Wallets and wallet-funded orders
 
-The Core commerce schema contains wallet and ledger tables, but Core does not yet expose a public wallet-balance, wallet-ledger, spend or transfer endpoint. Do not query those tables directly from Commerce or a game plugin. Virtual-currency purchases require a future atomic Core transaction that combines the ledger debit, order state and entitlement creation.
+- `GET /account/wallets` returns the authenticated player's wallet balances. Balances are derived from the append-only ledger; amounts are returned as decimal strings to preserve integer precision.
+- `GET /account/wallets/{currencyCode}/ledger?limit=50` returns the most recent ledger entries for one of that player's wallets (maximum 100 entries per request).
+- `POST /commerce/orders/{orderId}/pay-with-wallet` atomically debits the matching wallet, records a `wallet` payment transaction, marks the order paid, and invokes the same entitlement/reward fulfillment path used by verified Stripe payments. The order ID is the idempotency boundary; repeated requests do not debit twice.
+- `PUT /admin/commerce/products/{productId}/wallet-mapping` configures the wallet currency and credit amount granted by a `currency_pack` product. The mapping is copied onto each order item when the order is created so later catalog changes cannot alter a paid top-up.
+
+Currency-pack products must have a wallet mapping before they can appear in the public catalog or be ordered. Use a dedicated non-fiat wallet code (for example, `ATK`); a code registered as a wallet currency is treated as wallet-only and cannot be sent to Stripe checkout. Currency packs must be purchased through the configured external payment provider and cannot be purchased with the wallet they replenish. A verified Stripe success credits the mapped wallet through an idempotent ledger entry and does not create a game entitlement or reward delivery.
+
+Wallet-funded orders require a configured wallet currency, sufficient balance, and no active or successful external payment attempt. The debit, payment transaction, paid order transition, entitlement creation, reward queue insertion, event-outbox entry, and audit record commit in one database transaction.
 
 ## Not implemented
 
-- Public wallet balance/ledger, wallet spending, credits/adjustments and player transfers.
+- Manual wallet adjustments and player-to-player transfers.
 - Production/live payment mode and refund automation.
 - A running reward-delivery worker and verified native ATLAS item/creature grant implementation.
 

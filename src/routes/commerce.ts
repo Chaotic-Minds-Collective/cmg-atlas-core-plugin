@@ -40,6 +40,17 @@ const productMappingSchema = z.object({
   deliveryPayload: z.record(z.string(), z.unknown()).default({})
 });
 
+const walletMappingSchema = z.object({
+  currencyCode: z.string().length(3).regex(/^[A-Za-z]{3}$/).transform((value) => value.toUpperCase()),
+  creditAmountMinor: z.string().regex(/^[1-9][0-9]{0,17}$/)
+});
+
+const walletLedgerQuerySchema = z.object({
+  limit: z.coerce.number().int().min(1).max(100).default(50)
+});
+
+const MAX_PG_BIGINT = 9223372036854775807n;
+
 async function requireCommerceAdmin(request: FastifyRequest, reply: FastifyReply): Promise<string | null> {
   if (!pool) {
     reply.code(503).send({ error: { code: "DATABASE_UNAVAILABLE", message: "Commerce administration is temporarily unavailable." } });
@@ -71,7 +82,10 @@ type PricedProduct = {
   id: string;
   sku: string;
   name: string;
+  product_type: string;
   amount_minor: string;
+  wallet_credit_currency: string | null;
+  wallet_credit_unit_minor: string | null;
 };
 
 export async function registerCommerceRoutes(app: FastifyInstance): Promise<void> {
@@ -81,7 +95,8 @@ export async function registerCommerceRoutes(app: FastifyInstance): Promise<void
     const result = await pool!.query(
       "SELECT p.id, p.sku, p.name, p.description, p.product_type AS \"productType\", p.status, " +
       "COALESCE((SELECT json_agg(json_build_object('currency', pp.currency, 'amountMinor', pp.amount_minor::text, 'activeFrom', pp.active_from, 'activeUntil', pp.active_until) ORDER BY pp.currency, pp.active_from DESC) FROM commerce.product_prices pp WHERE pp.product_id = p.id), '[]'::json) AS prices, " +
-      "COALESCE((SELECT json_agg(json_build_object('gameKey', pgm.game_key, 'serverId', pgm.server_id, 'serverName', s.name, 'deliveryType', pgm.delivery_type, 'deliveryPayload', pgm.delivery_payload) ORDER BY pgm.game_key) FROM commerce.product_game_mappings pgm LEFT JOIN core.servers s ON s.id = pgm.server_id WHERE pgm.product_id = p.id), '[]'::json) AS \"gameMappings\" " +
+      "COALESCE((SELECT json_agg(json_build_object('gameKey', pgm.game_key, 'serverId', pgm.server_id, 'serverName', s.name, 'deliveryType', pgm.delivery_type, 'deliveryPayload', pgm.delivery_payload) ORDER BY pgm.game_key) FROM commerce.product_game_mappings pgm LEFT JOIN core.servers s ON s.id = pgm.server_id WHERE pgm.product_id = p.id), '[]'::json) AS \"gameMappings\", " +
+      "COALESCE((SELECT json_build_object('currencyCode', pwm.currency_code, 'creditAmountMinor', pwm.credit_amount_minor::text) FROM commerce.product_wallet_mappings pwm WHERE pwm.product_id = p.id), 'null'::json) AS \"walletMapping\" " +
       "FROM commerce.products p ORDER BY p.created_at DESC"
     );
     return { data: result.rows, requestId: request.id };
@@ -235,6 +250,74 @@ export async function registerCommerceRoutes(app: FastifyInstance): Promise<void
     }
   });
 
+  app.put("/admin/commerce/products/:productId/wallet-mapping", async (request, reply) => {
+    const actorId = await requireCommerceAdmin(request, reply);
+    if (!actorId) return;
+    const params = z.object({ productId: z.string().uuid() }).safeParse(request.params);
+    const parsed = walletMappingSchema.safeParse(request.body);
+    if (!params.success || !parsed.success) {
+      return reply.code(400).send({ error: { code: "VALIDATION_ERROR", message: "The wallet credit mapping is invalid." } });
+    }
+    const creditAmount = BigInt(parsed.data.creditAmountMinor);
+    if (creditAmount > MAX_PG_BIGINT) {
+      return reply.code(400).send({ error: { code: "INVALID_WALLET_CREDIT_AMOUNT", message: "The wallet credit amount exceeds the supported range." } });
+    }
+
+    const client = await pool!.connect();
+    try {
+      await client.query("BEGIN");
+      const product = await client.query<{ product_type: string }>(
+        "SELECT product_type FROM commerce.products WHERE id = $1 FOR UPDATE",
+        [params.data.productId]
+      );
+      if (!product.rows[0]) {
+        await client.query("ROLLBACK");
+        return reply.code(404).send({ error: { code: "PRODUCT_NOT_FOUND", message: "The product was not found." } });
+      }
+      if (product.rows[0].product_type !== "currency_pack") {
+        await client.query("ROLLBACK");
+        return reply.code(409).send({ error: { code: "WALLET_MAPPING_PRODUCT_TYPE_INVALID", message: "Wallet credit mappings are only valid for currency-pack products." } });
+      }
+      const currentMapping = await client.query<{ currency_code: string }>(
+        "SELECT currency_code FROM commerce.product_wallet_mappings WHERE product_id = $1 FOR UPDATE",
+        [params.data.productId]
+      );
+      const currentCurrency = currentMapping.rows[0]?.currency_code.trim().toUpperCase();
+      if (currentCurrency && currentCurrency !== parsed.data.currencyCode) {
+        const otherMapping = await client.query(
+          "SELECT 1 FROM commerce.product_wallet_mappings WHERE currency_code = $1 AND product_id <> $2 LIMIT 1",
+          [currentCurrency, params.data.productId]
+        );
+        if (!otherMapping.rowCount) {
+          const currencyInUse = await client.query<{ in_use: boolean }>(
+            "SELECT EXISTS (SELECT 1 FROM commerce.wallets WHERE currency_code = $1) OR EXISTS (SELECT 1 FROM commerce.order_items WHERE wallet_credit_currency = $1) AS in_use",
+            [currentCurrency]
+          );
+          if (currencyInUse.rows[0]?.in_use) {
+            await client.query("ROLLBACK");
+            return reply.code(409).send({ error: { code: "WALLET_CURRENCY_IN_USE", message: "This wallet currency is already present in player wallets or order snapshots and cannot be replaced on its last product mapping." } });
+          }
+        }
+      }
+      const result = await client.query(
+        "INSERT INTO commerce.product_wallet_mappings (product_id, currency_code, credit_amount_minor) VALUES ($1, $2, $3) ON CONFLICT (product_id) DO UPDATE SET currency_code = EXCLUDED.currency_code, credit_amount_minor = EXCLUDED.credit_amount_minor, updated_at = NOW() RETURNING product_id AS \"productId\", currency_code AS \"currencyCode\", credit_amount_minor::text AS \"creditAmountMinor\"",
+        [params.data.productId, parsed.data.currencyCode, creditAmount.toString()]
+      );
+      await client.query(
+        "INSERT INTO operations.audit_logs (actor_principal_id, action, resource_type, resource_id, outcome, metadata) VALUES ($1, 'commerce.product.wallet_mapping.upserted', 'product', $2, 'success', $3::jsonb)",
+        [actorId, params.data.productId, JSON.stringify({ currencyCode: parsed.data.currencyCode, creditAmountMinor: creditAmount.toString() })]
+      );
+      await client.query("COMMIT");
+      return { data: result.rows[0], requestId: request.id };
+    } catch (error) {
+      await client.query("ROLLBACK").catch(() => undefined);
+      request.log.error({ err: error }, "Commerce wallet mapping update failed");
+      return reply.code(500).send({ error: { code: "WALLET_MAPPING_UPDATE_FAILED", message: "The wallet credit mapping could not be updated." } });
+    } finally {
+      client.release();
+    }
+  });
+
   app.get("/catalog/products", async (request, reply) => {
     if (!pool) return reply.code(503).send({ error: { code: "DATABASE_UNAVAILABLE", message: "The catalog is temporarily unavailable." } });
     const currency = typeof request.query === "object" && request.query !== null && "currency" in request.query
@@ -246,7 +329,9 @@ export async function registerCommerceRoutes(app: FastifyInstance): Promise<void
 
     const result = await pool.query(
       `SELECT p.id, p.sku, p.name, p.description, p.product_type AS "productType",
-              pp.currency, pp.amount_minor AS "amountMinor"
+              pp.currency, pp.amount_minor::text AS "amountMinor",
+              pwm.currency_code AS "walletCreditCurrency",
+              pwm.credit_amount_minor::text AS "walletCreditAmountMinor"
          FROM commerce.products p
          JOIN LATERAL (
            SELECT currency, amount_minor
@@ -258,7 +343,9 @@ export async function registerCommerceRoutes(app: FastifyInstance): Promise<void
             ORDER BY active_from DESC
             LIMIT 1
          ) pp ON TRUE
+         LEFT JOIN commerce.product_wallet_mappings pwm ON pwm.product_id = p.id
         WHERE p.status = 'active'
+          AND (p.product_type <> 'currency_pack' OR pwm.product_id IS NOT NULL)
         ORDER BY p.name ASC`,
       [currency]
     );
@@ -367,6 +454,49 @@ export async function registerCommerceRoutes(app: FastifyInstance): Promise<void
     }
   });
 
+  app.get("/account/wallets", async (request, reply) => {
+    if (!pool) return reply.code(503).send({ error: { code: "DATABASE_UNAVAILABLE", message: "Wallet balances are temporarily unavailable." } });
+    const principalId = await requirePrincipal(request, reply);
+    if (!principalId) return;
+    const result = await pool.query(
+      `SELECT w.currency_code AS "currencyCode",
+              COALESCE(SUM(CASE WHEN l.entry_type IN ('credit', 'refund', 'adjustment') THEN l.amount_minor ELSE -l.amount_minor END), 0)::text AS "balanceMinor",
+              MAX(l.created_at) AS "lastActivityAt"
+         FROM commerce.wallets w
+         LEFT JOIN commerce.wallet_ledger l ON l.wallet_id = w.id
+        WHERE w.principal_id = $1
+        GROUP BY w.id
+        ORDER BY w.currency_code`,
+      [principalId]
+    );
+    return { data: result.rows, requestId: request.id };
+  });
+
+  app.get("/account/wallets/:currencyCode/ledger", async (request, reply) => {
+    if (!pool) return reply.code(503).send({ error: { code: "DATABASE_UNAVAILABLE", message: "Wallet history is temporarily unavailable." } });
+    const principalId = await requirePrincipal(request, reply);
+    if (!principalId) return;
+    const params = z.object({ currencyCode: z.string().length(3).regex(/^[A-Za-z]{3}$/).transform((value) => value.toUpperCase()) }).safeParse(request.params);
+    const query = walletLedgerQuerySchema.safeParse(request.query);
+    if (!params.success || !query.success) return reply.code(400).send({ error: { code: "VALIDATION_ERROR", message: "The wallet currency or ledger limit is invalid." } });
+    const wallet = await pool.query<{ id: string }>(
+      "SELECT id FROM commerce.wallets WHERE principal_id = $1 AND currency_code = $2",
+      [principalId, params.data.currencyCode]
+    );
+    if (!wallet.rows[0]) return reply.code(404).send({ error: { code: "WALLET_NOT_FOUND", message: "No wallet exists for that currency." } });
+    const result = await pool.query(
+      `SELECT id, entry_type AS "entryType", amount_minor::text AS "amountMinor",
+              reference_type AS "referenceType", reference_id AS "referenceId",
+              created_at AS "createdAt"
+         FROM commerce.wallet_ledger
+        WHERE wallet_id = $1
+        ORDER BY created_at DESC, id DESC
+        LIMIT $2`,
+      [wallet.rows[0].id, query.data.limit]
+    );
+    return { data: result.rows, requestId: request.id };
+  });
+
   app.get("/account/orders", async (request, reply) => {
     if (!pool) return reply.code(503).send({ error: { code: "DATABASE_UNAVAILABLE", message: "Order history is temporarily unavailable." } });
     const principalId = await requirePrincipal(request, reply);
@@ -425,20 +555,23 @@ export async function registerCommerceRoutes(app: FastifyInstance): Promise<void
 
       const productIds = normalizedItems.map((item) => item.productId);
       const products = await client.query<PricedProduct>(
-        `SELECT p.id, p.sku, p.name, pp.amount_minor
-           FROM commerce.products p
-           JOIN LATERAL (
-             SELECT amount_minor
-               FROM commerce.product_prices
-              WHERE product_id = p.id
-                AND currency = $2
-                AND active_from <= NOW()
-                AND (active_until IS NULL OR active_until > NOW())
-              ORDER BY active_from DESC
-              LIMIT 1
-           ) pp ON TRUE
-          WHERE p.id = ANY($1::uuid[]) AND p.status = 'active'
-          FOR SHARE OF p`,
+        `SELECT p.id, p.sku, p.name, p.product_type, pp.amount_minor::text AS amount_minor,
+                 pwm.currency_code AS wallet_credit_currency,
+                 pwm.credit_amount_minor::text AS wallet_credit_unit_minor
+            FROM commerce.products p
+            JOIN LATERAL (
+              SELECT amount_minor
+                FROM commerce.product_prices
+               WHERE product_id = p.id
+                 AND currency = $2
+                 AND active_from <= NOW()
+                 AND (active_until IS NULL OR active_until > NOW())
+               ORDER BY active_from DESC
+               LIMIT 1
+            ) pp ON TRUE
+            LEFT JOIN commerce.product_wallet_mappings pwm ON pwm.product_id = p.id
+           WHERE p.id = ANY($1::uuid[]) AND p.status = 'active'
+           FOR SHARE OF p`,
         [productIds, parsed.data.currency]
       );
 
@@ -447,7 +580,36 @@ export async function registerCommerceRoutes(app: FastifyInstance): Promise<void
         return reply.code(400).send({ error: { code: "PRODUCT_UNAVAILABLE", message: "One or more products are unavailable in the selected currency." } });
       }
 
+      const invalidWalletConfiguration = products.rows.some((product) =>
+        product.product_type === "currency_pack"
+          ? !product.wallet_credit_currency || !product.wallet_credit_unit_minor
+          : product.wallet_credit_currency !== null || product.wallet_credit_unit_minor !== null
+      );
+      if (invalidWalletConfiguration) {
+        await client.query("ROLLBACK");
+        return reply.code(409).send({ error: { code: "PRODUCT_CONFIGURATION_INVALID", message: "A currency-pack product is missing a valid wallet credit mapping." } });
+      }
+
+      if (products.rows.some((product) => product.product_type === "currency_pack")) {
+        const walletCurrencyOrder = await client.query(
+          "SELECT 1 FROM commerce.product_wallet_mappings WHERE currency_code = $1 LIMIT 1",
+          [parsed.data.currency]
+        );
+        if (walletCurrencyOrder.rowCount) {
+          await client.query("ROLLBACK");
+          return reply.code(409).send({ error: { code: "CURRENCY_PACK_REQUIRES_EXTERNAL_PAYMENT", message: "Currency packs must be priced in an external payment currency, not a wallet currency." } });
+        }
+      }
+
       const byId = new Map(products.rows.map((product) => [product.id, product]));
+      const walletCreditOverflow = normalizedItems.some((item) => {
+        const product = byId.get(item.productId);
+        return Boolean(product?.wallet_credit_unit_minor && BigInt(product.wallet_credit_unit_minor) * BigInt(item.quantity) > MAX_PG_BIGINT);
+      });
+      if (walletCreditOverflow) {
+        await client.query("ROLLBACK");
+        return reply.code(409).send({ error: { code: "PRODUCT_CONFIGURATION_INVALID", message: "The configured wallet credit amount exceeds the supported order range." } });
+      }
       let subtotal = 0n;
       const lines = normalizedItems.map((item) => {
         const product = byId.get(item.productId);
@@ -471,9 +633,9 @@ export async function registerCommerceRoutes(app: FastifyInstance): Promise<void
       for (const line of lines) {
         await client.query(
           `INSERT INTO commerce.order_items
-            (order_id, product_id, sku_snapshot, name_snapshot, quantity, unit_amount_minor, line_total_minor)
-           VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-          [orderId, line.product.id, line.product.sku, line.product.name, line.quantity, line.unit.toString(), line.total.toString()]
+            (order_id, product_id, sku_snapshot, name_snapshot, quantity, unit_amount_minor, line_total_minor, wallet_credit_currency, wallet_credit_unit_minor)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+          [orderId, line.product.id, line.product.sku, line.product.name, line.quantity, line.unit.toString(), line.total.toString(), line.product.wallet_credit_currency, line.product.wallet_credit_unit_minor]
         );
       }
 
