@@ -41,3 +41,7 @@ Example game event bridge:
 `npm run service:create -- 7dtd-event-bridge --role game_event_publisher --scope-type server --scope-id <SERVER_UUID>`
 
 Credentials are printed once and stored hashed in the database. Keep the printed secret in the host's secret manager.
+
+## ATLAS quest runtime
+
+Assign the `atlas_quest_runtime` role to the exact server scope used by the Adventures worker. It grants quest read/progress permissions plus `events.claim`, `events.renew`, and `events.ack`. Keep this identity server-scoped; do not use a platform-wide credential for game event consumption.

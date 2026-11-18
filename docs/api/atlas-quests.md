@@ -50,4 +50,4 @@ The event receipt and progress update commit in one transaction. A duplicate eve
 - Runtime worker: `npm run service:create -- atlas-adventures --role atlas_quest_runtime --scope-type server --scope-id <SERVER_UUID>`
 - Quest publisher: `npm run service:create -- atlas-quest-manager --role atlas_quest_manager --scope-type cluster --scope-id <CLUSTER_UUID>`
 
-The runtime role includes only event claim/ack and quest read/progress permissions. The manager role can publish definitions only for its assigned cluster.
+The runtime role includes only event claim/renew/ack and quest read/progress permissions. The manager role can publish definitions only for its assigned cluster.
