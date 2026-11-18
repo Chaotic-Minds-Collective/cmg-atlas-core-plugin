@@ -29,7 +29,7 @@ Revisions are immutable. The caller supplies `expectedRevision`; Core returns `4
 
 `GET /integrations/servers/{serverId}/quests`
 
-Requires `quests.read` on the exact server. Core returns the latest enabled revision whose cluster/grid/server scope includes that server.
+Requires `quests.read` on the exact server. Core returns a quest only when its latest revision is enabled and its cluster/grid/server scope includes that server; it does not fall back to an earlier enabled revision.
 
 ## Read player progress
 

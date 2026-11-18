@@ -128,7 +128,7 @@ export async function registerEventOutboxRoutes(app: FastifyInstance): Promise<v
 
       const renewed = await client.query<{ lease_expires_at: Date }>(
         `UPDATE operations.event_outbox
-            SET lease_expires_at = clock_timestamp() + make_interval(secs => $2)
+            SET lease_expires_at = GREATEST(lease_expires_at, clock_timestamp() + make_interval(secs => $2))
           WHERE id = $1
           RETURNING lease_expires_at`,
         [event.id, body.data.leaseSeconds]

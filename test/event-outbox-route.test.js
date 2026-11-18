@@ -77,7 +77,10 @@ test("game event outbox claims are server-scoped and acknowledgements require th
     assert.equal(renewal.statusCode, 200);
     assert.equal(renewal.json().data.renewed, true);
     assert.equal(renewal.json().data.eventId, eventId);
-    assert.ok(Date.parse(renewal.json().data.leaseExpiresAt) > Date.now());
+    const renewedExpiry = Date.parse(renewal.json().data.leaseExpiresAt);
+    assert.ok(renewedExpiry > Date.parse(rows[0].leaseExpiresAt));
+    const storedExpiry = await pool.query("SELECT lease_expires_at FROM operations.event_outbox WHERE id = $1", [eventId]);
+    assert.equal(storedExpiry.rows[0].lease_expires_at.toISOString(), renewal.json().data.leaseExpiresAt);
 
     const ack = () => app.inject({
       method: "POST",

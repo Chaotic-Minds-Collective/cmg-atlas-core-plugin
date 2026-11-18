@@ -195,7 +195,7 @@ export async function registerAtlasQuestRoutes(app: FastifyInstance): Promise<vo
         return sendError(reply, 404, "ATLAS_SERVER_NOT_FOUND", "The ATLAS server or grid was not found.");
       }
       const eventResult = await client.query(
-        `SELECT payload, claimed_by_principal_id, lease_token, (lease_expires_at > NOW()) AS lease_active
+        `SELECT payload, claimed_by_principal_id, lease_token, (lease_expires_at > clock_timestamp()) AS lease_active
            FROM operations.event_outbox
           WHERE id = $1 AND event_type = 'game.event.received' AND payload->>'serverId' = $2
           FOR UPDATE`,
@@ -225,7 +225,6 @@ export async function registerAtlasQuestRoutes(app: FastifyInstance): Promise<vo
       const objectiveIds = Object.keys(player.objectives);
       if (objectiveIds.some((id) => !definition.objectives.some((objective) => objective.id === id)) ||
           definition.objectives.filter((objective) => objective.eventType === eventPayload.eventType).length === 0 ||
-          objectiveIds.some((id) => !definition.objectives.some((objective) => objective.id === id && objective.eventType === eventPayload.eventType)) ||
           definition.objectives.some((objective) => (player.objectives[objective.id] ?? 0) > objective.targetCount)) {
         await client.query("ROLLBACK");
         return sendError(reply, 400, "QUEST_PROGRESS_INVALID", "Progress contains unsupported objectives or counts for this event.");
@@ -256,11 +255,35 @@ export async function registerAtlasQuestRoutes(app: FastifyInstance): Promise<vo
         [context.clusterId, params.data.questId, body.data.revision, body.data.platformId]
       );
       const currentRow = current.rows[0] as { state: { players?: Record<string, { objectives?: Record<string, number>; completed?: boolean; completedAt?: string | null }> } | null; version: number } | undefined;
+
+      const finalLease = await client.query<{ lease_active: boolean }>(
+        `SELECT (lease_expires_at > clock_timestamp()) AS lease_active
+           FROM operations.event_outbox
+          WHERE id = $1 AND event_type = 'game.event.received'
+            AND payload->>'serverId' = $2
+            AND claimed_by_principal_id = $3 AND lease_token = $4
+            AND processed_at IS NULL`,
+        [body.data.eventId, params.data.serverId, actorId, body.data.leaseToken]
+      );
+      if (finalLease.rows[0]?.lease_active !== true) {
+        await client.query("ROLLBACK");
+        return sendError(reply, 409, "EVENT_LEASE_INVALID", "The service must still hold the active Core event lease to persist quest progress.");
+      }
+
       if ((currentRow?.version ?? 0) !== body.data.expectedVersion) {
         await client.query("ROLLBACK");
         return sendError(reply, 409, "QUEST_PROGRESS_CONFLICT", "Quest progress changed concurrently. Reload and reapply this event.");
       }
       const previousPlayer = currentRow?.state?.players?.[body.data.platformId];
+      if (objectiveIds.some((id) => {
+        const objective = definition.objectives.find((candidate) => candidate.id === id);
+        return objective &&
+          (player.objectives[id] ?? 0) > (previousPlayer?.objectives?.[id] ?? 0) &&
+          objective.eventType !== eventPayload.eventType;
+      })) {
+        await client.query("ROLLBACK");
+        return sendError(reply, 400, "QUEST_PROGRESS_INVALID", "Only objectives matching this event type may increase.");
+      }
       if (previousPlayer) {
         for (const objective of definition.objectives) {
           if ((player.objectives[objective.id] ?? 0) < (previousPlayer.objectives?.[objective.id] ?? 0)) {
@@ -290,9 +313,15 @@ export async function registerAtlasQuestRoutes(app: FastifyInstance): Promise<vo
           )
         : await client.query(
             `INSERT INTO games_atlas.quest_progress (cluster_id, quest_id, quest_revision, player_platform_id, state, version)
-             VALUES ($1, $2, $3, $4, $5::jsonb, 1) RETURNING version`,
+             VALUES ($1, $2, $3, $4, $5::jsonb, 1)
+             ON CONFLICT (cluster_id, quest_id, quest_revision, player_platform_id) DO NOTHING
+             RETURNING version`,
             [context.clusterId, params.data.questId, body.data.revision, body.data.platformId, stateJson]
           );
+      if (!currentRow && !saved.rows[0]) {
+        await client.query("ROLLBACK");
+        return sendError(reply, 409, "QUEST_PROGRESS_CONFLICT", "Quest progress was initialized concurrently. Reload and reapply this event.");
+      }
       await client.query(
         `INSERT INTO operations.audit_logs (actor_principal_id, action, resource_type, resource_id, outcome, metadata)
          VALUES ($1, 'atlas.quest.progress.persist', 'atlas_quest', $2, 'success', $3::jsonb)`,

@@ -14,7 +14,7 @@ test("ATLAS quests publish immutable revisions and persist progress once per lea
   await registerEventOutboxRoutes(app);
   await registerAtlasQuestRoutes(app);
   await app.ready();
-  const ids = { cluster: randomUUID(), server: randomUUID(), principal: randomUUID(), quest: randomUUID(), event: randomUUID(), eventRecord: randomUUID() };
+  const ids = { cluster: randomUUID(), server: randomUUID(), principal: randomUUID(), quest: randomUUID(), event: randomUUID(), eventRecord: randomUUID(), eventLeft: randomUUID(), eventLeftRecord: randomUUID() };
   const token = "cg_srv_" + randomBytes(36).toString("base64url");
   const suffix = randomUUID();
   const platformId = "76561198000000000";
@@ -23,7 +23,10 @@ test("ATLAS quests publish immutable revisions and persist progress once per lea
   const definition = {
     schemaVersion: 1, questId: ids.quest, revision: 1, name: "First Steps", enabled: true,
     scope: { clusterId: ids.cluster, gridIds: ["A1"] },
-    objectives: [{ id: "join-first-grid", eventType: "player.joined", targetCount: 2 }]
+    objectives: [
+      { id: "join-first-grid", eventType: "player.joined", targetCount: 2 },
+      { id: "leave-first-grid", eventType: "player.left", targetCount: 2 }
+    ]
   };
 
   try {
@@ -52,6 +55,11 @@ test("ATLAS quests publish immutable revisions and persist progress once per lea
        VALUES ($1, 'game.event.received', 'game_event', $2, $3::jsonb)`,
       [ids.event, ids.eventRecord, JSON.stringify({ eventRecordId: ids.eventRecord, serverId: ids.server, clusterId: ids.cluster, gridId: "A1", correlationId: null, game: "atlas", eventId: "quest-test-" + suffix, eventType: "player.joined", occurredAt, payload: { platformId, playerName: "Quest Tester" } })]
     );
+    await pool.query(
+      `INSERT INTO operations.event_outbox (id, event_type, aggregate_type, aggregate_id, payload)
+       VALUES ($1, 'game.event.received', 'game_event', $2, $3::jsonb)`,
+      [ids.eventLeft, ids.eventLeftRecord, JSON.stringify({ eventRecordId: ids.eventLeftRecord, serverId: ids.server, clusterId: ids.cluster, gridId: "A1", correlationId: null, game: "atlas", eventId: "quest-left-test-" + suffix, eventType: "player.left", occurredAt, payload: { platformId, playerName: "Quest Tester" } })]
+    );
     const claim = await app.inject({ method: "POST", url: `/integrations/servers/${ids.server}/events/claim`, headers, payload: { limit: 5, eventTypes: ["player.joined"] } });
     assert.equal(claim.statusCode, 200, claim.body);
     assert.equal(claim.json().data.length, 1);
@@ -79,13 +87,32 @@ test("ATLAS quests publish immutable revisions and persist progress once per lea
     assert.deepEqual(saved.json().data.state.processedEventIds, []);
     assert.equal(saved.json().data.state.players[platformId].objectives["join-first-grid"], 1);
 
+    const leftClaim = await app.inject({ method: "POST", url: `/integrations/servers/${ids.server}/events/claim`, headers, payload: { limit: 5, eventTypes: ["player.left"] } });
+    assert.equal(leftClaim.statusCode, 200, leftClaim.body);
+    const leftLeaseToken = leftClaim.json().data[0].leaseToken;
+    const leftState = {
+      schemaVersion: 1, questId: ids.quest, questRevision: 1, processedEventIds: [ids.eventLeft],
+      players: { [platformId]: { objectives: { "join-first-grid": 1, "leave-first-grid": 1 }, completed: false, completedAt: null } }
+    };
+    const leftPersist = await app.inject({
+      method: "POST",
+      url: `/integrations/servers/${ids.server}/quests/${ids.quest}/progress`,
+      headers,
+      payload: { revision: 1, eventId: ids.eventLeft, leaseToken: leftLeaseToken, platformId, expectedVersion: 1, state: leftState }
+    });
+    assert.equal(leftPersist.statusCode, 201, leftPersist.body);
+    assert.equal(leftPersist.json().data.version, 2);
+    const combined = await app.inject({ method: "GET", url: progressUrl, headers });
+    assert.equal(combined.json().data.state.players[platformId].objectives["join-first-grid"], 1);
+    assert.equal(combined.json().data.state.players[platformId].objectives["leave-first-grid"], 1);
+
     const ack = await app.inject({ method: "POST", url: `/integrations/servers/${ids.server}/events/${ids.event}/ack`, headers, payload: { leaseToken, outcome: "delivered" } });
     assert.equal(ack.statusCode, 202, ack.body);
   } finally {
     await pool.query("DELETE FROM games_atlas.quest_event_receipts WHERE cluster_id = $1", [ids.cluster]);
     await pool.query("DELETE FROM games_atlas.quest_progress WHERE cluster_id = $1", [ids.cluster]);
     await pool.query("DELETE FROM games_atlas.quests WHERE cluster_id = $1", [ids.cluster]);
-    await pool.query("DELETE FROM operations.event_outbox WHERE id = $1", [ids.event]);
+    await pool.query("DELETE FROM operations.event_outbox WHERE id = ANY($1::uuid[])", [[ids.event, ids.eventLeft]]);
     await pool.query("DELETE FROM operations.audit_logs WHERE actor_principal_id = $1", [ids.principal]);
     await pool.query("DELETE FROM core.service_credentials WHERE principal_id = $1", [ids.principal]);
     await pool.query("DELETE FROM core.principal_role_assignments WHERE principal_id = $1", [ids.principal]);
