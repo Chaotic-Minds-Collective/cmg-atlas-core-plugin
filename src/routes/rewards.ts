@@ -2,12 +2,14 @@ import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { requireServicePermission } from "../auth/service.js";
 import { pool } from "../db.js";
+import { isActiveRewardLease, matchesRewardLeaseToken } from "../rewards/lease.js";
 
 const claimSchema = z.object({
   limit: z.number().int().min(1).max(100).default(10)
 });
 
 const ackSchema = z.object({
+  leaseToken: z.string().uuid(),
   outcome: z.enum(["delivered", "failed"]),
   response: z.record(z.string(), z.unknown()).optional(),
   error: z.string().max(1000).optional()
@@ -46,6 +48,7 @@ export async function registerRewardRoutes(app: FastifyInstance): Promise<void> 
          UPDATE commerce.reward_queue rq
             SET status = 'processing',
                 attempts = rq.attempts + 1,
+                lease_token = gen_random_uuid(),
                 claimed_by_principal_id = $3,
                 lease_expires_at = NOW() + INTERVAL '120 seconds'
            FROM picked
@@ -53,7 +56,8 @@ export async function registerRewardRoutes(app: FastifyInstance): Promise<void> 
          RETURNING rq.id, rq.entitlement_id AS "entitlementId",
                    rq.game_key AS game, rq.target_external_id AS "targetExternalId",
                    rq.delivery_payload AS "deliveryPayload", rq.attempts,
-                   rq.idempotency_key AS "idempotencyKey", rq.lease_expires_at AS "leaseExpiresAt"`,
+                   rq.idempotency_key AS "idempotencyKey", rq.lease_expires_at AS "leaseExpiresAt",
+                   rq.lease_token AS "leaseToken"`,
         [params.data.serverId, body.data.limit, actorId]
       );
 
@@ -94,8 +98,9 @@ export async function registerRewardRoutes(app: FastifyInstance): Promise<void> 
         attempts: number;
         claimed_by_principal_id: string | null;
         lease_expires_at: Date | null;
+        lease_token: string | null;
       }>(
-        `SELECT id, status, attempts, claimed_by_principal_id, lease_expires_at
+        `SELECT id, status, attempts, claimed_by_principal_id, lease_expires_at, lease_token
            FROM commerce.reward_queue
           WHERE id = $1 AND server_id = $2
           FOR UPDATE`,
@@ -106,16 +111,15 @@ export async function registerRewardRoutes(app: FastifyInstance): Promise<void> 
         await client.query("ROLLBACK");
         return reply.code(404).send({ error: { code: "REWARD_NOT_FOUND", message: "The reward delivery was not found for this server." } });
       }
+      if (!matchesRewardLeaseToken(reward.lease_token, body.data.leaseToken)) {
+        await client.query("ROLLBACK");
+        return reply.code(409).send({ error: { code: "REWARD_LEASE_INVALID", message: "The reward claim token is no longer current." } });
+      }
       if (reward.status === "delivered" && body.data.outcome === "delivered") {
         await client.query("COMMIT");
         return reply.code(202).send({ data: { accepted: true, duplicate: true, rewardId: reward.id }, requestId: request.id });
       }
-      if (
-        reward.status !== "processing"
-        || reward.claimed_by_principal_id !== actorId
-        || !reward.lease_expires_at
-        || reward.lease_expires_at.getTime() <= Date.now()
-      ) {
+      if (!isActiveRewardLease(reward, actorId, body.data.leaseToken)) {
         await client.query("ROLLBACK");
         return reply.code(409).send({ error: { code: "REWARD_LEASE_INVALID", message: "This service does not hold an active lease for the reward." } });
       }
