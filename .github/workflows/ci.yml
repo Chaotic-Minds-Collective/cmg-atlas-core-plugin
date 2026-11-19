@@ -4,7 +4,6 @@ on:
   push:
     branches: [main]
   pull_request:
-    branches: [main]
 
 permissions:
   contents: read
@@ -34,6 +33,7 @@ jobs:
       DATABASE_URL: postgresql://postgres:postgres@localhost:5432/atlas_core_test
       STEAM_OPENID_RETURN_URL: https://www.chaoticmindsgaming.com/api/account/link/steam/callback
       STRIPE_WEBHOOK_SECRET: whsec_ci_wallet_test_secret_2026_11_18
+      STEAM_OPENID_RETURN_URL: https://www.chaoticmindsgaming.com/api/account/link/steam/callback
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-node@v5
