@@ -26,8 +26,21 @@ try {
   const roleId = role.rows[0]?.id;
   if (!roleId) throw new Error("platform_admin role is not seeded.");
 
+  await client.query(
+    `UPDATE core.principal_role_assignments
+        SET ended_at = expires_at
+      WHERE principal_id = $1
+        AND role_id = $2
+        AND scope_type = 'platform'
+        AND scope_id IS NULL
+        AND ended_at IS NULL
+        AND expires_at IS NOT NULL
+        AND expires_at <= NOW()`,
+    [principalId, roleId]
+  );
+
   const existing = await client.query(
-    "SELECT 1 FROM core.principal_role_assignments WHERE principal_id = $1 AND role_id = $2 AND scope_type = 'platform' AND scope_id IS NULL AND (expires_at IS NULL OR expires_at > NOW())",
+    "SELECT 1 FROM core.principal_role_assignments WHERE principal_id = $1 AND role_id = $2 AND scope_type = 'platform' AND scope_id IS NULL AND ended_at IS NULL AND (expires_at IS NULL OR expires_at > NOW())",
     [principalId, roleId]
   );
   if (!existing.rowCount) {

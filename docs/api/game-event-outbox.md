@@ -58,7 +58,7 @@ Acknowledgements require the same service principal and active per-event lease t
 npm run service:create -- atlas-event-consumer --role game_event_consumer --scope-type server --scope-id <SERVER_UUID>
 ```
 
-The role grants `events.claim`, `events.renew`, and `events.ack`. A platform-level assignment is technically supported by Core's authorization helper but is not recommended for game adapters.
+The role grants `events.claim`, `events.renew`, and `events.ack` only within the assigned server scope. Platform-scoped assignments do not authorize server-scoped event delivery operations.
 
 ## Delivery boundary
 

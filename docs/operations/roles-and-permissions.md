@@ -1,6 +1,6 @@
 # Roles and Scoped Permissions
 
-Roles are assigned to a principal at one scope: platform, game, cluster, server or guild. Do not treat Discord role membership as a Core permission.
+Roles are assigned to a principal at one scope: platform, game, cluster, server or guild. Authorization requires an assignment at the exact requested scope; platform grants do not inherit into narrower scopes, and narrower grants do not inherit upward or sideways. Do not treat Discord role membership as a Core permission.
 
 ## Common assignments
 
@@ -45,3 +45,8 @@ Credentials are printed once and stored hashed in the database. Keep the printed
 ## ATLAS quest runtime
 
 Assign the `atlas_quest_runtime` role to the exact server scope used by the Adventures worker. It grants quest read/progress permissions plus `events.claim`, `events.renew`, and `events.ack`. Keep this identity server-scoped; do not use a platform-wide credential for game event consumption.
+
+
+## Assignment expiry and re-granting
+
+Expired role assignments remain in the audit history. The Core role-assignment commands close an expired assignment by setting its `ended_at` lifecycle marker before creating a new assignment at the same scope. A row with `ended_at IS NULL` is the current lifecycle record; do not delete expired assignment history to work around a uniqueness conflict.
