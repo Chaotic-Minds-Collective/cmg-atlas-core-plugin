@@ -275,15 +275,6 @@ export async function registerAtlasQuestRoutes(app: FastifyInstance): Promise<vo
         return sendError(reply, 409, "QUEST_PROGRESS_CONFLICT", "Quest progress changed concurrently. Reload and reapply this event.");
       }
       const previousPlayer = currentRow?.state?.players?.[body.data.platformId];
-      if (objectiveIds.some((id) => {
-        const objective = definition.objectives.find((candidate) => candidate.id === id);
-        return objective &&
-          (player.objectives[id] ?? 0) > (previousPlayer?.objectives?.[id] ?? 0) &&
-          objective.eventType !== eventPayload.eventType;
-      })) {
-        await client.query("ROLLBACK");
-        return sendError(reply, 400, "QUEST_PROGRESS_INVALID", "Only objectives matching this event type may increase.");
-      }
       if (previousPlayer) {
         for (const objective of definition.objectives) {
           if ((player.objectives[objective.id] ?? 0) < (previousPlayer.objectives?.[objective.id] ?? 0)) {
@@ -294,6 +285,21 @@ export async function registerAtlasQuestRoutes(app: FastifyInstance): Promise<vo
         if (previousPlayer.completed && !player.completed) {
           await client.query("ROLLBACK");
           return sendError(reply, 409, "QUEST_PROGRESS_REGRESSION", "Completed quest progress cannot be reopened.");
+        }
+      }
+
+      // Core independently enforces the reducer's one-increment-per-event contract.
+      // Never trust a worker-supplied aggregate progress state, even from an authorized service.
+      for (const objective of definition.objectives) {
+        const previousCount = previousPlayer?.objectives?.[objective.id] ?? 0;
+        const expectedCount = previousPlayer?.completed
+          ? previousCount
+          : objective.eventType === eventPayload.eventType
+            ? Math.min(objective.targetCount, previousCount + 1)
+            : previousCount;
+        if ((player.objectives[objective.id] ?? 0) !== expectedCount) {
+          await client.query("ROLLBACK");
+          return sendError(reply, 400, "QUEST_PROGRESS_INVALID", "Each objective must reflect exactly one increment for this event, capped at its target.");
         }
       }
 
