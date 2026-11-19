@@ -46,6 +46,7 @@ test("platform-scoped service assignment still authorizes platform plugin regist
     await pool.query("DELETE FROM core.plugin_installations WHERE plugin_id = $1", [pluginId]);
     await pool.query("DELETE FROM core.plugin_versions WHERE plugin_id = $1", [pluginId]);
     await pool.query("DELETE FROM core.plugins WHERE plugin_id = $1", [pluginId]);
+    await pool.query("DELETE FROM operations.audit_logs WHERE actor_principal_id = $1", [principalId]);
     await pool.query("DELETE FROM core.service_credentials WHERE principal_id = $1", [principalId]);
     await pool.query("DELETE FROM core.principal_role_assignments WHERE principal_id = $1", [principalId]);
     await pool.query("DELETE FROM core.service_accounts WHERE principal_id = $1", [principalId]);
