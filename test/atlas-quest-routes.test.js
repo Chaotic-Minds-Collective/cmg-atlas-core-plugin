@@ -76,7 +76,7 @@ test("ATLAS quests publish immutable revisions and persist progress once per lea
     const persistPayload = { revision: 1, eventId: ids.event, leaseToken, platformId, expectedVersion: 0, state };
     const initialJumpPayload = {
       ...persistPayload,
-      state: { ...state, players: { [platformId]: { objectives: { "join-first-grid": 3 }, completed: true, completedAt: occurredAt } } }
+      state: { ...state, players: { [platformId]: { objectives: { "join-first-grid": 2 }, completed: false, completedAt: null } } }
     };
     const initialJump = await app.inject({ method: "POST", url: `/integrations/servers/${ids.server}/quests/${ids.quest}/progress`, headers, payload: initialJumpPayload });
     assert.equal(initialJump.statusCode, 400, initialJump.body);
@@ -128,7 +128,7 @@ test("ATLAS quests publish immutable revisions and persist progress once per lea
     const existingProgressJump = await app.inject({
       method: "POST", url: secondLeftUrl, headers,
       payload: { revision: 1, eventId: ids.eventLeftAgain, leaseToken: secondLeftLeaseToken, platformId, expectedVersion: 2,
-        state: { ...secondLeftState, players: { [platformId]: { objectives: { "join-first-grid": 1, "leave-first-grid": 3 }, completed: true, completedAt: occurredAt } } } }
+        state: { ...secondLeftState, players: { [platformId]: { objectives: { "join-first-grid": 1, "leave-first-grid": 3 }, completed: false, completedAt: null } } } }
     });
     assert.equal(existingProgressJump.statusCode, 400, existingProgressJump.body);
     assert.equal(existingProgressJump.json().error.code, "QUEST_PROGRESS_INVALID");
