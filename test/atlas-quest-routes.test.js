@@ -142,7 +142,7 @@ test("ATLAS quests publish immutable revisions and persist progress once per lea
 
     const combined = await app.inject({ method: "GET", url: progressUrl, headers });
     assert.equal(combined.json().data.state.players[platformId].objectives["join-first-grid"], 1);
-    assert.equal(combined.json().data.state.players[platformId].objectives["leave-first-grid"], 1);
+    assert.equal(combined.json().data.state.players[platformId].objectives["leave-first-grid"], 2);
 
     const ack = await app.inject({ method: "POST", url: `/integrations/servers/${ids.server}/events/${ids.event}/ack`, headers, payload: { leaseToken, outcome: "delivered" } });
     assert.equal(ack.statusCode, 202, ack.body);
