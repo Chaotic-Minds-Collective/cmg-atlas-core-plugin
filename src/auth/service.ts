@@ -40,15 +40,14 @@ export async function requireServicePermission(
         AND (sc.expires_at IS NULL OR sc.expires_at > NOW())
         AND p.status = 'active'
         AND perm.permission_key = $2
+        AND pra.ended_at IS NULL
         AND (pra.expires_at IS NULL OR pra.expires_at > NOW())
+        AND pra.scope_type = $3
         AND (
-          (pra.scope_type = 'platform' AND pra.scope_id IS NULL)
-          OR (pra.scope_type = $3 AND (
-            CASE WHEN pra.scope_type = 'server'
-              THEN lower(pra.scope_id) IS NOT DISTINCT FROM lower($4::text)
-              ELSE pra.scope_id IS NOT DISTINCT FROM $4
-            END
-          ))
+          CASE WHEN pra.scope_type = 'server'
+            THEN lower(pra.scope_id) IS NOT DISTINCT FROM lower($4::text)
+            ELSE pra.scope_id IS NOT DISTINCT FROM $4
+          END
         )
       LIMIT 1`,
     [credentialHash, permissionKey, scopeType, scopeId]

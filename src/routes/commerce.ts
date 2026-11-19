@@ -64,6 +64,7 @@ async function requireCommerceAdmin(request: FastifyRequest, reply: FastifyReply
     "JOIN core.permissions p ON p.id = rp.permission_id " +
     "WHERE pra.principal_id = $1 AND p.permission_key = 'commerce.manage' " +
     "AND pra.scope_type = 'platform' AND pra.scope_id IS NULL " +
+    "AND pra.ended_at IS NULL " +
     "AND (pra.expires_at IS NULL OR pra.expires_at > NOW()) LIMIT 1",
     [principalId]
   );

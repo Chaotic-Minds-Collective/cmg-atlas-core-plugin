@@ -30,7 +30,7 @@ Body:
 }
 ```
 
-Requires `servers.heartbeat` for the exact server scope or a platform-level grant. The server must exist and its game key must match. Heartbeats are append-only records; the latest received record is the current observed status.
+Requires `servers.heartbeat` assigned to the exact server scope. Platform-scoped grants authorize platform-scoped operations only; they do not inherit into game, cluster, server, or guild scopes. The server must exist and its game key must match. Heartbeats are append-only records; the latest received record is the current observed status.
 
 ## Security notes
 

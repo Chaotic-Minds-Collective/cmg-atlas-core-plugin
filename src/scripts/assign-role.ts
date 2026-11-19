@@ -41,6 +41,19 @@ try {
     if (!exists.rowCount) throw new Error("Server scope not found.");
   }
 
+  await client.query(
+    `UPDATE core.principal_role_assignments
+        SET ended_at = expires_at
+      WHERE principal_id = $1
+        AND role_id = $2
+        AND scope_type = $3
+        AND scope_id IS NOT DISTINCT FROM $4
+        AND ended_at IS NULL
+        AND expires_at IS NOT NULL
+        AND expires_at <= NOW()`,
+    [principalId, role.rows[0].id, scopeType, scopeIdArg ?? null]
+  );
+
   const assignment = await client.query(
     `INSERT INTO core.principal_role_assignments (principal_id, role_id, scope_type, scope_id)
      VALUES ($1, $2, $3, $4)

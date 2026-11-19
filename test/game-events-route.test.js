@@ -14,7 +14,9 @@ test("game event route validates scope and persists authoritative metadata", {
   const clusterId = randomUUID();
   const serverId = randomUUID();
   const principalId = randomUUID();
+  const platformPrincipalId = randomUUID();
   const token = "cg_srv_" + randomBytes(36).toString("base64url");
+  const platformToken = "cg_srv_" + randomBytes(36).toString("base64url");
   const scope = { clusterId, serverId, gridId: "A1" };
   const baseEvent = {
     game: "atlas",
@@ -24,10 +26,10 @@ test("game event route validates scope and persists authoritative metadata", {
     scope,
     correlationId: "transfer-42",
   };
-  const publish = (event, urlServerId = serverId) => app.inject({
+  const publish = (event, urlServerId = serverId, serviceToken = token) => app.inject({
     method: "POST",
     url: `/integrations/servers/${urlServerId}/events`,
-    headers: { authorization: "Bearer " + token },
+    headers: { authorization: "Bearer " + serviceToken },
     payload: event,
   });
   try {
@@ -37,6 +39,17 @@ test("game event route validates scope and persists authoritative metadata", {
     await pool.query("INSERT INTO core.service_accounts (principal_id, application_name) VALUES ($1, $2)", [principalId, "event-test-" + principalId]);
     await pool.query("INSERT INTO core.service_credentials (principal_id, credential_hash, label) VALUES ($1, $2, 'event-test')", [principalId, hashServiceToken(token)]);
     await pool.query("INSERT INTO core.principal_role_assignments (principal_id, role_id, scope_type, scope_id) SELECT $1, id, 'server', $2 FROM core.roles WHERE role_key = 'game_event_publisher'", [principalId, serverId]);
+
+    // A platform-only publisher must not inherit permission for a server operation.
+    await pool.query("INSERT INTO core.principals (id, principal_type, status) VALUES ($1, 'service', 'active')", [platformPrincipalId]);
+    await pool.query("INSERT INTO core.service_accounts (principal_id, application_name) VALUES ($1, $2)", [platformPrincipalId, "event-platform-test-" + platformPrincipalId]);
+    await pool.query("INSERT INTO core.service_credentials (principal_id, credential_hash, label) VALUES ($1, $2, 'event-platform-test')", [platformPrincipalId, hashServiceToken(platformToken)]);
+    await pool.query("INSERT INTO core.principal_role_assignments (principal_id, role_id, scope_type, scope_id) SELECT $1, id, 'platform', NULL FROM core.roles WHERE role_key = 'game_event_publisher'", [platformPrincipalId]);
+    const platformDeniedEventId = randomUUID();
+    const platformDenied = await publish({ ...baseEvent, eventId: platformDeniedEventId }, serverId, platformToken);
+    assert.equal(platformDenied.statusCode, 403, platformDenied.body);
+    assert.equal((await pool.query("SELECT id FROM operations.game_events WHERE server_id = $1 AND external_event_id = $2", [serverId, platformDeniedEventId])).rowCount, 0);
+    assert.equal((await pool.query("SELECT id FROM operations.event_outbox WHERE payload->>'eventId' = $1", [platformDeniedEventId])).rowCount, 0);
 
     for (const field of ["clusterId", "serverId"]) {
       await t.test(`rejects mismatched ${field} without event, outbox, or audit writes`, async () => {
@@ -99,8 +112,11 @@ test("game event route validates scope and persists authoritative metadata", {
     try {
       await pool.query("DELETE FROM operations.event_outbox WHERE aggregate_type = 'game_event' AND aggregate_id IN (SELECT id::text FROM operations.game_events WHERE server_id = $1)", [serverId]);
       await pool.query("DELETE FROM operations.game_events WHERE server_id = $1", [serverId]);
-      await pool.query("DELETE FROM operations.audit_logs WHERE actor_principal_id = $1", [principalId]);
-      await pool.query("DELETE FROM core.service_credentials WHERE principal_id = $1", [principalId]);
+      await pool.query("DELETE FROM operations.audit_logs WHERE actor_principal_id IN ($1, $2)", [principalId, platformPrincipalId]);
+      await pool.query("DELETE FROM core.service_credentials WHERE principal_id IN ($1, $2)", [principalId, platformPrincipalId]);
+      await pool.query("DELETE FROM core.principal_role_assignments WHERE principal_id = $1", [platformPrincipalId]);
+      await pool.query("DELETE FROM core.service_accounts WHERE principal_id = $1", [platformPrincipalId]);
+      await pool.query("DELETE FROM core.principals WHERE id = $1", [platformPrincipalId]);
       await pool.query("DELETE FROM core.principal_role_assignments WHERE principal_id = $1", [principalId]);
       await pool.query("DELETE FROM core.service_accounts WHERE principal_id = $1", [principalId]);
       await pool.query("DELETE FROM core.principals WHERE id = $1", [principalId]);
