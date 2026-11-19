@@ -45,8 +45,10 @@ test("expired role assignment can be closed and re-granted without deleting hist
       [principalId, role.rows[0].id]
     );
     assert.equal(history.rowCount, 2);
-    assert.ok(history.rows[0].ended_at, "expired assignment must remain as ended history");
-    assert.equal(history.rows[1].ended_at, null, "replacement assignment must be active");
+    const previousGrant = history.rows.find((row) => row.id === expired.rows[0].id);
+    const currentGrant = history.rows.find((row) => row.id === renewed.rows[0].id);
+    assert.ok(previousGrant?.ended_at, "expired assignment must remain as ended history");
+    assert.equal(currentGrant?.ended_at, null, "replacement assignment must be active");
   } finally {
     await pool.query("DELETE FROM core.principal_role_assignments WHERE principal_id = $1", [principalId]);
     await pool.query("DELETE FROM core.principals WHERE id = $1", [principalId]);

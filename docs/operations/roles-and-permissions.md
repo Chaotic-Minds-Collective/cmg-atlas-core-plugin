@@ -49,4 +49,4 @@ Assign the `atlas_quest_runtime` role to the exact server scope used by the Adve
 
 ## Assignment expiry and re-granting
 
-Expired role assignments remain in the audit history. The Core role-assignment commands close an expired assignment by setting its `ended_at` lifecycle marker before creating a new assignment at the same scope. A row with `ended_at IS NULL` is the current lifecycle record; do not delete expired assignment history to work around a uniqueness conflict.
+Expired role assignments remain in assignment history. The Core role-assignment commands close an expired assignment by setting its `ended_at` lifecycle marker before creating a new assignment at the same scope. A row with `ended_at IS NULL` is the current lifecycle record (it may be expired until a re-grant closes it); do not delete expired assignment history to work around a uniqueness conflict.

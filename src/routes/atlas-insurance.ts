@@ -48,6 +48,7 @@ async function requireInsuranceReviewer(
         AND p.permission_key = 'atlas.insurance.claims.review'
         AND pra.scope_type = 'platform'
         AND pra.scope_id IS NULL
+        AND pra.ended_at IS NULL
         AND (pra.expires_at IS NULL OR pra.expires_at > NOW())
       LIMIT 1`,
     [principalId]

@@ -40,6 +40,7 @@ export async function requireServicePermission(
         AND (sc.expires_at IS NULL OR sc.expires_at > NOW())
         AND p.status = 'active'
         AND perm.permission_key = $2
+        AND pra.ended_at IS NULL
         AND (pra.expires_at IS NULL OR pra.expires_at > NOW())
         AND pra.scope_type = $3
         AND (
