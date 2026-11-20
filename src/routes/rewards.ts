@@ -5,7 +5,13 @@ import { pool } from "../db.js";
 import { isActiveRewardLease, matchesRewardLeaseToken } from "../rewards/lease.js";
 
 const claimSchema = z.object({
-  limit: z.number().int().min(1).max(100).default(10)
+  limit: z.number().int().min(1).max(100).default(10),
+  leaseSeconds: z.number().int().min(15).max(300).default(120)
+});
+
+const renewSchema = z.object({
+  leaseToken: z.string().uuid(),
+  leaseSeconds: z.number().int().min(15).max(300).default(120)
 });
 
 const ackSchema = z.object({
@@ -50,7 +56,7 @@ export async function registerRewardRoutes(app: FastifyInstance): Promise<void> 
                 attempts = rq.attempts + 1,
                 lease_token = gen_random_uuid(),
                 claimed_by_principal_id = $3,
-                lease_expires_at = NOW() + INTERVAL '120 seconds'
+                lease_expires_at = clock_timestamp() + make_interval(secs => $4)
            FROM picked
           WHERE rq.id = picked.id
          RETURNING rq.id, rq.entitlement_id AS "entitlementId",
@@ -58,7 +64,7 @@ export async function registerRewardRoutes(app: FastifyInstance): Promise<void> 
                    rq.delivery_payload AS "deliveryPayload", rq.attempts,
                    rq.idempotency_key AS "idempotencyKey", rq.lease_expires_at AS "leaseExpiresAt",
                    rq.lease_token AS "leaseToken"`,
-        [params.data.serverId, body.data.limit, actorId]
+        [params.data.serverId, body.data.limit, actorId, body.data.leaseSeconds]
       );
 
       await client.query(
@@ -73,6 +79,73 @@ export async function registerRewardRoutes(app: FastifyInstance): Promise<void> 
       await client.query("ROLLBACK").catch(() => undefined);
       request.log.error({ err: error }, "Reward claim failed");
       return reply.code(500).send({ error: { code: "REWARD_CLAIM_FAILED", message: "Reward deliveries could not be claimed." } });
+    } finally {
+      client.release();
+    }
+  });
+
+  app.post("/integrations/servers/:serverId/rewards/:rewardId/renew", async (request, reply) => {
+    if (!pool) return reply.code(503).send({ error: { code: "DATABASE_UNAVAILABLE", message: "Reward lease renewal is temporarily unavailable." } });
+    const params = z.object({ serverId: z.string().uuid(), rewardId: z.string().uuid() }).safeParse(request.params);
+    const body = renewSchema.safeParse(request.body);
+    if (!params.success || !body.success) {
+      return reply.code(400).send({ error: { code: "VALIDATION_ERROR", message: "A valid server UUID, reward UUID, lease token, and lease duration are required." } });
+    }
+
+    const actorId = await requireServicePermission(request, reply, "rewards.renew", "server", params.data.serverId);
+    if (!actorId) return;
+
+    const client = await pool.connect();
+    try {
+      await client.query("BEGIN");
+      const current = await client.query<{
+        id: string;
+        status: string;
+        claimed_by_principal_id: string | null;
+        lease_expires_at: Date | null;
+        lease_token: string | null;
+      }>(
+        `SELECT id, status, claimed_by_principal_id, lease_expires_at, lease_token
+           FROM commerce.reward_queue
+          WHERE id = $1 AND server_id = $2
+          FOR UPDATE`,
+        [params.data.rewardId, params.data.serverId]
+      );
+      const reward = current.rows[0];
+      if (!reward) {
+        await client.query("ROLLBACK");
+        return reply.code(404).send({ error: { code: "REWARD_NOT_FOUND", message: "The reward delivery was not found for this server." } });
+      }
+      if (!isActiveRewardLease(reward, actorId, body.data.leaseToken)) {
+        await client.query("ROLLBACK");
+        return reply.code(409).send({ error: { code: "REWARD_LEASE_INVALID", message: "Only the service holding the current, unexpired reward lease can renew it." } });
+      }
+
+      const renewed = await client.query<{ lease_expires_at: Date }>(
+        `UPDATE commerce.reward_queue
+            SET lease_expires_at = GREATEST(lease_expires_at, clock_timestamp() + make_interval(secs => $3))
+          WHERE id = $1 AND server_id = $2
+          RETURNING lease_expires_at`,
+        [reward.id, params.data.serverId, body.data.leaseSeconds]
+      );
+      const leaseExpiresAt = renewed.rows[0]?.lease_expires_at;
+      if (!leaseExpiresAt) throw new Error("The reward lease renewal did not return an expiry");
+
+      await client.query(
+        `INSERT INTO operations.audit_logs
+          (actor_principal_id, action, resource_type, resource_id, outcome, metadata)
+         VALUES ($1, 'reward.lease.renew', 'reward', $2, 'success', $3::jsonb)`,
+        [actorId, reward.id, JSON.stringify({ leaseSeconds: body.data.leaseSeconds })]
+      );
+      await client.query("COMMIT");
+      return reply.code(200).send({
+        data: { renewed: true, rewardId: reward.id, leaseExpiresAt: leaseExpiresAt.toISOString() },
+        requestId: request.id
+      });
+    } catch (error) {
+      await client.query("ROLLBACK").catch(() => undefined);
+      request.log.error({ err: error }, "Reward lease renewal failed");
+      return reply.code(500).send({ error: { code: "REWARD_LEASE_RENEWAL_FAILED", message: "The reward lease could not be renewed." } });
     } finally {
       client.release();
     }
