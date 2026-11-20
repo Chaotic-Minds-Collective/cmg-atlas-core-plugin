@@ -232,6 +232,43 @@ test("ATLAS color-token applications reserve uses and consume only after adapter
     const secondClaim = claimed.find((item) => item.applicationId === second.applicationId);
     const thirdClaim = claimed.find((item) => item.applicationId === third.applicationId);
     assert.ok(firstClaim && secondClaim && thirdClaim);
+
+    const wrongScopeRenewal = await app.inject({
+      method: "POST",
+      url: `/integrations/servers/${serverId}/atlas/color-token-applications/${firstClaim.applicationId}/renew`,
+      headers: { authorization: "Bearer " + wrongScopeServiceToken },
+      payload: { leaseToken: firstClaim.leaseToken, leaseSeconds: 180 }
+    });
+    assert.equal(wrongScopeRenewal.statusCode, 403);
+
+    const invalidDurationRenewal = await app.inject({
+      method: "POST",
+      url: `/integrations/servers/${serverId}/atlas/color-token-applications/${firstClaim.applicationId}/renew`,
+      headers: { authorization: "Bearer " + serviceToken },
+      payload: { leaseToken: firstClaim.leaseToken, leaseSeconds: 301 }
+    });
+    assert.equal(invalidDurationRenewal.statusCode, 400);
+
+    const renewedLease = await app.inject({
+      method: "POST",
+      url: `/integrations/servers/${serverId}/atlas/color-token-applications/${firstClaim.applicationId}/renew`,
+      headers: { authorization: "Bearer " + serviceToken },
+      payload: { leaseToken: firstClaim.leaseToken, leaseSeconds: 180 }
+    });
+    assert.equal(renewedLease.statusCode, 200, renewedLease.body);
+    assert.equal(renewedLease.json().data.renewed, true);
+    assert.equal(renewedLease.json().data.applicationId, firstClaim.applicationId);
+    assert.ok(Date.parse(renewedLease.json().data.leaseExpiresAt) > Date.parse(firstClaim.leaseExpiresAt));
+
+    const staleLeaseRenewal = await app.inject({
+      method: "POST",
+      url: `/integrations/servers/${serverId}/atlas/color-token-applications/${firstClaim.applicationId}/renew`,
+      headers: { authorization: "Bearer " + serviceToken },
+      payload: { leaseToken: "00000000-0000-4000-8000-000000000000", leaseSeconds: 180 }
+    });
+    assert.equal(staleLeaseRenewal.statusCode, 409);
+    assert.equal(staleLeaseRenewal.json().error.code, "COLOR_TOKEN_LEASE_INVALID");
+
     assert.equal(firstClaim.tokenKind, "ship");
     assert.equal(firstClaim.ownerExternalId, steamId);
     assert.deepEqual(firstClaim.selectedColor, payload.selectedColor);
