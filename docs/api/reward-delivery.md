@@ -73,4 +73,4 @@ Requires platform-scoped `commerce.manage`.
 { "resolution": "retry", "note": "Verified no item was granted." }
 ```
 
-Allowed resolutions are `delivered` or `retry`. The reward must currently be in `manual_review`. This endpoint records an audit entry and either marks the reward delivered or returns it to the retry queue.
+Allowed resolutions are `delivered` or `retry`. The reward must currently be in `manual_review`. This endpoint records an audit entry and either marks the reward delivered or returns it to the retry queue. A `retry` resolution rotates the delivery idempotency key only after the administrator has verified that no game grant occurred; this lets the adapter distinguish an explicitly approved new attempt from an automatic retry of an uncertain grant.

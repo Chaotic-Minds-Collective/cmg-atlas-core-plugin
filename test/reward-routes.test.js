@@ -155,8 +155,9 @@ test("reward lease renewal is fenced, scoped, and extends only an active claim",
     assert.equal(adminResolution.statusCode, 200, adminResolution.body);
     assert.equal(adminResolution.json().data.status, "failed");
 
-    const finalState = await pool.query("SELECT status FROM commerce.reward_queue WHERE id = $1", [rewardId]);
+    const finalState = await pool.query("SELECT status, idempotency_key FROM commerce.reward_queue WHERE id = $1", [rewardId]);
     assert.equal(finalState.rows[0].status, "failed");
+    assert.notEqual(finalState.rows[0].idempotency_key, rewardKey);
   } finally {
     if (rewardId) {
       await pool.query("DELETE FROM commerce.reward_attempts WHERE reward_id = $1", [rewardId]);
