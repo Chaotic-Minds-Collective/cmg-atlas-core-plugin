@@ -16,7 +16,7 @@ const renewSchema = z.object({
 
 const ackSchema = z.object({
   leaseToken: z.string().uuid(),
-  outcome: z.enum(["delivered", "failed"]),
+  outcome: z.enum(["delivered", "failed", "manual_review"]),
   response: z.record(z.string(), z.unknown()).optional(),
   error: z.string().max(1000).optional()
 });
@@ -210,6 +210,21 @@ export async function registerRewardRoutes(app: FastifyInstance): Promise<void> 
           `INSERT INTO commerce.reward_attempts (reward_id, attempt_number, outcome, response)
            VALUES ($1, $2, 'success', $3::jsonb)`,
           [reward.id, reward.attempts, JSON.stringify(body.data.response ?? {})]
+        );
+      } else if (body.data.outcome === "manual_review") {
+        const errorMessage = body.data.error ?? "Game adapter reported an uncertain delivery result requiring manual review.";
+        await client.query(
+          `UPDATE commerce.reward_queue
+              SET status = 'manual_review',
+                  claimed_by_principal_id = NULL, lease_expires_at = NULL,
+                  last_error = $2
+            WHERE id = $1`,
+          [reward.id, errorMessage]
+        );
+        await client.query(
+          `INSERT INTO commerce.reward_attempts (reward_id, attempt_number, outcome, response)
+           VALUES ($1, $2, 'manual_review', $3::jsonb)`,
+          [reward.id, reward.attempts, JSON.stringify({ ...(body.data.response ?? {}), error: errorMessage })]
         );
       } else {
         const errorMessage = body.data.error ?? "Game adapter reported delivery failure.";

@@ -4,6 +4,8 @@ import { randomBytes, randomUUID } from "node:crypto";
 import Fastify from "fastify";
 import { pool } from "../dist/db.js";
 import { hashServiceToken } from "../dist/auth/service.js";
+import { hashToken } from "../dist/auth/session.js";
+import { registerCommerceRoutes } from "../dist/routes/commerce.js";
 import { registerRewardRoutes } from "../dist/routes/rewards.js";
 
 test("reward lease renewal is fenced, scoped, and extends only an active claim", {
@@ -11,9 +13,11 @@ test("reward lease renewal is fenced, scoped, and extends only an active claim",
 }, async () => {
   const app = Fastify();
   await registerRewardRoutes(app);
+  await registerCommerceRoutes(app);
   const ids = {
     worker: randomUUID(),
     player: randomUUID(),
+    admin: randomUUID(),
     cluster: randomUUID(),
     server: randomUUID(),
     product: randomUUID(),
@@ -21,13 +25,14 @@ test("reward lease renewal is fenced, scoped, and extends only an active claim",
   };
   const suffix = randomUUID().replaceAll("-", "").slice(0, 16);
   const token = "cg_srv_" + randomBytes(36).toString("base64url");
+  const adminToken = randomBytes(32).toString("base64url");
   const rewardKey = "reward-renew-" + suffix;
   let rewardId;
 
   try {
     await pool.query(
-      "INSERT INTO core.principals (id, principal_type, status) VALUES ($1, 'service', 'active'), ($2, 'user', 'active')",
-      [ids.worker, ids.player]
+      "INSERT INTO core.principals (id, principal_type, status) VALUES ($1, 'service', 'active'), ($2, 'user', 'active'), ($3, 'user', 'active')",
+      [ids.worker, ids.player, ids.admin]
     );
     await pool.query(
       "INSERT INTO core.service_accounts (principal_id, application_name) VALUES ($1, $2)",
@@ -38,8 +43,16 @@ test("reward lease renewal is fenced, scoped, and extends only an active claim",
       [ids.worker, hashServiceToken(token)]
     );
     await pool.query(
-      "INSERT INTO core.users (principal_id, username) VALUES ($1, $2)",
-      [ids.player, "reward_renew_" + suffix]
+      "INSERT INTO core.users (principal_id, username) VALUES ($1, $2), ($3, $4)",
+      [ids.player, "reward_renew_" + suffix, ids.admin, "reward_admin_" + suffix]
+    );
+    await pool.query(
+      "INSERT INTO core.auth_sessions (principal_id, token_hash, expires_at) VALUES ($1, $2, NOW() + INTERVAL '1 hour')",
+      [ids.admin, hashToken(adminToken)]
+    );
+    await pool.query(
+      "INSERT INTO core.principal_role_assignments (principal_id, role_id, scope_type, scope_id) SELECT $1, id, 'platform', NULL FROM core.roles WHERE role_key = 'platform_admin'",
+      [ids.admin]
     );
     await pool.query(
       "INSERT INTO core.clusters (id, game_key, name, status) VALUES ($1, 'atlas', $2, 'active')",
@@ -113,16 +126,52 @@ test("reward lease renewal is fenced, scoped, and extends only an active claim",
     });
     assert.equal(expired.statusCode, 409);
     assert.equal(expired.json().error.code, "REWARD_LEASE_INVALID");
+
+    const reclaimed = await app.inject({
+      method: "POST",
+      url: "/integrations/servers/" + ids.server + "/rewards/claim",
+      headers,
+      payload: { limit: 1, leaseSeconds: 30 }
+    });
+    assert.equal(reclaimed.statusCode, 200, reclaimed.body);
+    const reclaimedReward = reclaimed.json().data[0];
+    assert.notEqual(reclaimedReward.leaseToken, claimed.leaseToken);
+
+    const manualReview = await app.inject({
+      method: "POST",
+      url: "/integrations/servers/" + ids.server + "/rewards/" + rewardId + "/ack",
+      headers,
+      payload: { leaseToken: reclaimedReward.leaseToken, outcome: "manual_review", error: "MANUAL_REVIEW_REQUIRED: item grant result is uncertain." }
+    });
+    assert.equal(manualReview.statusCode, 202, manualReview.body);
+    assert.equal(manualReview.json().data.outcome, "manual_review");
+
+    const adminResolution = await app.inject({
+      method: "POST",
+      url: "/admin/commerce/rewards/" + rewardId + "/reconcile",
+      headers: { authorization: "Bearer " + adminToken },
+      payload: { resolution: "retry", note: "Verified that the item marker is absent and no grant occurred." }
+    });
+    assert.equal(adminResolution.statusCode, 200, adminResolution.body);
+    assert.equal(adminResolution.json().data.status, "failed");
+
+    const finalState = await pool.query("SELECT status FROM commerce.reward_queue WHERE id = $1", [rewardId]);
+    assert.equal(finalState.rows[0].status, "failed");
   } finally {
-    if (rewardId) await pool.query("DELETE FROM commerce.reward_queue WHERE id = $1", [rewardId]);
-    await pool.query("DELETE FROM operations.audit_logs WHERE actor_principal_id = $1 OR resource_id = ANY($2::text[])", [ids.worker, [ids.server, rewardId].filter(Boolean)]);
+    if (rewardId) {
+      await pool.query("DELETE FROM commerce.reward_attempts WHERE reward_id = $1", [rewardId]);
+      await pool.query("DELETE FROM commerce.reward_queue WHERE id = $1", [rewardId]);
+    }
+    await pool.query("DELETE FROM operations.audit_logs WHERE actor_principal_id = ANY($1::uuid[]) OR resource_id = ANY($2::text[])", [[ids.worker, ids.admin], [ids.server, rewardId].filter(Boolean)]);
     await pool.query("DELETE FROM commerce.entitlements WHERE id = $1", [ids.entitlement]);
     await pool.query("DELETE FROM commerce.products WHERE id = $1", [ids.product]);
     await pool.query("DELETE FROM core.principal_role_assignments WHERE principal_id = $1", [ids.worker]);
     await pool.query("DELETE FROM core.service_credentials WHERE principal_id = $1", [ids.worker]);
     await pool.query("DELETE FROM core.service_accounts WHERE principal_id = $1", [ids.worker]);
-    await pool.query("DELETE FROM core.users WHERE principal_id = $1", [ids.player]);
-    await pool.query("DELETE FROM core.principals WHERE id = ANY($1::uuid[])", [[ids.worker, ids.player]]);
+    await pool.query("DELETE FROM core.auth_sessions WHERE principal_id = $1", [ids.admin]);
+    await pool.query("DELETE FROM core.principal_role_assignments WHERE principal_id = $1", [ids.admin]);
+    await pool.query("DELETE FROM core.users WHERE principal_id = ANY($1::uuid[])", [[ids.player, ids.admin]]);
+    await pool.query("DELETE FROM core.principals WHERE id = ANY($1::uuid[])", [[ids.worker, ids.player, ids.admin]]);
     await pool.query("DELETE FROM core.servers WHERE id = $1", [ids.server]);
     await pool.query("DELETE FROM core.clusters WHERE id = $1", [ids.cluster]);
     await app.close();
