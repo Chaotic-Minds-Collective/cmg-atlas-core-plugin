@@ -14,7 +14,23 @@ Request:
 { "limit": 10 }
 ```
 
-The Core claims up to 100 available rewards in a transaction, increments attempts, and grants a two-minute lease to the service identity. Expired processing leases can be reclaimed.
+The Core claims up to 100 available rewards in a transaction, increments attempts, and grants a lease to the service identity. The request may set `leaseSeconds` from 15 to 300 (default 120). Expired processing leases can be reclaimed.
+
+## Renew
+
+`POST /integrations/servers/{serverId}/rewards/{rewardId}/renew`
+
+Requires the same `reward_worker` service identity scoped to the exact server and the current lease token.
+
+Request:
+
+```json
+{ "leaseToken": "current-claim-token", "leaseSeconds": 120 }
+```
+
+Only the service holding the current, unexpired lease can renew it. Renewal extends the expiry to at least the requested duration from the current database time; it never changes the lease token. A stale, expired, or differently scoped claim is rejected with `409 REWARD_LEASE_INVALID`.
+
+The worker should renew before the lease approaches expiry and stop dispatching if renewal cannot be confirmed.
 
 ## Acknowledge
 
