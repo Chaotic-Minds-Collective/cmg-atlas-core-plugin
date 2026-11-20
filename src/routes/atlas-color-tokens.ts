@@ -42,6 +42,11 @@ const claimSchema = z.object({
   limit: z.number().int().min(1).max(20).default(1)
 }).strict();
 
+const renewSchema = z.object({
+  leaseToken: z.string().uuid(),
+  leaseSeconds: z.number().int().min(15).max(300).default(120)
+}).strict();
+
 const ackSchema = z.object({
   leaseToken: z.string().uuid(),
   outcome: z.enum(["applied", "failed"]),
@@ -386,6 +391,72 @@ export async function registerAtlasColorTokenRoutes(app: FastifyInstance): Promi
       await client.query("ROLLBACK").catch(() => undefined);
       request.log.error({ err: error }, "ATLAS color-token application claim failed");
       return reply.code(500).send({ error: { code: "COLOR_TOKEN_CLAIM_FAILED", message: "Color-token applications could not be claimed." } });
+    } finally {
+      client.release();
+    }
+  });
+
+  app.post("/integrations/servers/:serverId/atlas/color-token-applications/:applicationId/renew", async (request, reply) => {
+    if (!pool) return reply.code(503).send({ error: { code: "DATABASE_UNAVAILABLE", message: "ATLAS color-token lease renewal is temporarily unavailable." } });
+
+    const params = z.object({
+      ...serverParamsSchema.shape,
+      applicationId: z.string().uuid().transform((value) => value.toLowerCase())
+    }).safeParse(request.params);
+    const body = renewSchema.safeParse(request.body);
+    if (!params.success || !body.success) {
+      return reply.code(400).send({ error: { code: "VALIDATION_ERROR", message: "A valid application ID, lease token, and lease duration are required." } });
+    }
+
+    const actorId = await requireServicePermission(request, reply, "atlas.color_tokens.renew", "server", params.data.serverId);
+    if (!actorId) return;
+
+    const client = await pool.connect();
+    try {
+      await client.query("BEGIN");
+      const renewed = await client.query<{ lease_expires_at: Date }>(
+        `UPDATE operations.atlas_color_token_applications a
+            SET lease_expires_at = clock_timestamp() + ($5::integer * INTERVAL '1 second'),
+                updated_at = clock_timestamp()
+           FROM core.servers s
+          WHERE a.id = $1
+            AND a.server_id = $2
+            AND a.status = 'processing'
+            AND a.claimed_by_principal_id = $3
+            AND a.lease_token = $4
+            AND a.lease_expires_at > clock_timestamp()
+            AND s.id = a.server_id
+            AND s.game_key = 'atlas'
+            AND s.status <> 'deleted'
+         RETURNING a.lease_expires_at`,
+        [params.data.applicationId, params.data.serverId, actorId, body.data.leaseToken, body.data.leaseSeconds]
+      );
+
+      if (!renewed.rows[0]) {
+        await client.query("ROLLBACK");
+        return reply.code(409).send({ error: { code: "COLOR_TOKEN_LEASE_INVALID", message: "This service does not hold an active lease for the color-token application." } });
+      }
+
+      await client.query(
+        `INSERT INTO operations.audit_logs
+          (actor_principal_id, action, resource_type, resource_id, outcome, metadata)
+         VALUES ($1, 'atlas.color_token.application.lease_renewed', 'atlas_color_token_application', $2, 'success', $3::jsonb)`,
+        [actorId, params.data.applicationId, JSON.stringify({ serverId: params.data.serverId, leaseSeconds: body.data.leaseSeconds })]
+      );
+
+      await client.query("COMMIT");
+      return {
+        data: {
+          renewed: true,
+          applicationId: params.data.applicationId,
+          leaseExpiresAt: renewed.rows[0].lease_expires_at
+        },
+        requestId: request.id
+      };
+    } catch (error) {
+      await client.query("ROLLBACK").catch(() => undefined);
+      request.log.error({ err: error }, "ATLAS color-token lease renewal failed");
+      return reply.code(500).send({ error: { code: "COLOR_TOKEN_LEASE_RENEWAL_FAILED", message: "The color-token application lease could not be renewed." } });
     } finally {
       client.release();
     }

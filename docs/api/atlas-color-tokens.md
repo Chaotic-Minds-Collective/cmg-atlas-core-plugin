@@ -134,3 +134,14 @@ The native adapter must:
 6. Never log service credentials, lease tokens, or other secrets.
 
 Core does not perform a native color change and does not treat a submitted request or a claimed operation as successful. Native API integration remains a separate adapter implementation task.
+
+
+## Lease renewal
+
+A worker may extend an active color-token application lease with:
+
+`POST /integrations/servers/{serverId}/atlas/color-token-applications/{applicationId}/renew`
+
+The request contains the current `leaseToken` and an optional `leaseSeconds` value (15–300; default 120). Renewal is accepted only while the application is processing, the lease has not expired, and the caller still holds the same server-scoped worker identity and fencing token. Expired or stale leases cannot be revived; the worker must stop and allow the application to be reclaimed. Renewal is audited and requires the server-scoped `atlas.color_tokens.renew` permission.
+
+Workers should renew well before expiry and must not continue a native operation after renewal fails.
