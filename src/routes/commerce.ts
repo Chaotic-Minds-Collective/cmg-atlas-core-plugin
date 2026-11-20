@@ -700,7 +700,7 @@ export async function registerCommerceRoutes(app: FastifyInstance): Promise<void
         );
       } else {
         await client.query(
-          "UPDATE commerce.reward_queue SET status = 'failed', available_at = NOW(), last_error = $2 WHERE id = $1",
+          "UPDATE commerce.reward_queue SET status = 'failed', available_at = NOW(), last_error = $2, idempotency_key = gen_random_uuid()::text WHERE id = $1",
           [reward.id, parsed.data.note]
         );
       }
