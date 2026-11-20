@@ -662,4 +662,67 @@ export async function registerCommerceRoutes(app: FastifyInstance): Promise<void
       client.release();
     }
   });
+
+  app.post("/admin/commerce/rewards/:rewardId/reconcile", async (request, reply) => {
+    const actorId = await requireCommerceAdmin(request, reply);
+    if (!actorId) return;
+    const params = z.object({ rewardId: z.string().uuid() }).safeParse(request.params);
+    const parsed = z.object({
+      resolution: z.enum(["delivered", "retry"]),
+      note: z.string().trim().min(8).max(1000)
+    }).safeParse(request.body);
+    if (!params.success || !parsed.success) {
+      return reply.code(400).send({ error: { code: "VALIDATION_ERROR", message: "A valid reward ID, resolution, and reconciliation note are required." } });
+    }
+
+    const client = await pool!.connect();
+    try {
+      await client.query("BEGIN");
+      const current = await client.query<{ id: string; status: string; attempts: number }>(
+        "SELECT id, status, attempts FROM commerce.reward_queue WHERE id = $1 FOR UPDATE",
+        [params.data.rewardId]
+      );
+      const reward = current.rows[0];
+      if (!reward) {
+        await client.query("ROLLBACK");
+        return reply.code(404).send({ error: { code: "REWARD_NOT_FOUND", message: "The reward was not found." } });
+      }
+      if (reward.status !== "manual_review") {
+        await client.query("ROLLBACK");
+        return reply.code(409).send({ error: { code: "REWARD_NOT_IN_MANUAL_REVIEW", message: "Only rewards awaiting manual review can be reconciled." } });
+      }
+
+      const nextStatus = parsed.data.resolution === "delivered" ? "delivered" : "failed";
+      if (parsed.data.resolution === "delivered") {
+        await client.query(
+          "UPDATE commerce.reward_queue SET status = 'delivered', delivered_at = NOW(), last_error = NULL WHERE id = $1",
+          [reward.id]
+        );
+      } else {
+        await client.query(
+          "UPDATE commerce.reward_queue SET status = 'failed', available_at = NOW(), last_error = $2 WHERE id = $1",
+          [reward.id, parsed.data.note]
+        );
+      }
+
+      await client.query(
+        `INSERT INTO operations.audit_logs
+          (actor_principal_id, action, resource_type, resource_id, outcome, metadata)
+         VALUES ($1, 'reward.manual_review.resolved', 'reward', $2, 'success', $3::jsonb)`,
+        [actorId, reward.id, JSON.stringify({ resolution: parsed.data.resolution, note: parsed.data.note, previousAttempts: reward.attempts })]
+      );
+      await client.query("COMMIT");
+      return reply.code(200).send({
+        data: { rewardId: reward.id, status: nextStatus, resolution: parsed.data.resolution },
+        requestId: request.id
+      });
+    } catch (error) {
+      await client.query("ROLLBACK").catch(() => undefined);
+      request.log.error({ err: error }, "Reward manual review reconciliation failed");
+      return reply.code(500).send({ error: { code: "REWARD_RECONCILIATION_FAILED", message: "The reward could not be reconciled." } });
+    } finally {
+      client.release();
+    }
+  });
+
 }
